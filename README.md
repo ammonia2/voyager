@@ -1,6 +1,3 @@
-# voyager
-MARL Opponent Modeling in Project Malmo, Minecraft
-
 ## Project Malmo setup
 
 ## Prerequisites

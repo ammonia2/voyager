@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<Mission xmlns="http://ProjectMalmo.microsoft.com"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <About>
+    <Summary>Predator-Prey Combat Arena</Summary>
+  </About>
+
+  <!-- ===== WORLD ===== -->
+  <ServerSection>
+    <ServerInitialConditions>
+      <Time>
+        <StartTime>6000</StartTime>
+        <AllowPassageOfTime>false</AllowPassageOfTime>
+      </Time>
+      <Weather>clear</Weather>
+      <AllowSpawning>false</AllowSpawning>
+    </ServerInitialConditions>
+    <ServerHandlers>
+      <FlatWorldGenerator generatorString="3;7,2x3,2;1;" forceReset="true"/>
+      <DrawingDecorator>
+        <!-- Arena floor -->
+        <DrawCuboid x1="0" y1="3" z1="0" x2="20" y2="3" z2="20" type="stone"/>
+        <!-- Arena walls -->
+        <DrawCuboid x1="0" y1="4" z1="0" x2="20" y2="6" z2="0"  type="stonebrick"/>
+        <DrawCuboid x1="0" y1="4" z1="0" x2="0"  y2="6" z2="20" type="stonebrick"/>
+        <DrawCuboid x1="20" y1="4" z1="0" x2="20" y2="6" z2="20" type="stonebrick"/>
+        <DrawCuboid x1="0" y1="4" z1="20" x2="20" y2="6" z2="20" type="stonebrick"/>
+        <!-- Clear interior -->
+        <DrawCuboid x1="1" y1="4" z1="1" x2="19" y2="6" z2="19" type="air"/>
+      </DrawingDecorator>
+      <ServerQuitFromTimeUp timeLimitMs="60000" description="episode timeout"/>
+      <ServerQuitWhenAnyAgentFinishes/>
+    </ServerHandlers>
+  </ServerSection>
+
+  <!-- ===== PREDATOR 1 ===== -->
+  <AgentSection mode="Adventure">
+    <Name>Predator1</Name>
+    <AgentStart>
+      <Placement x="5" y="4" z="5" yaw="0"/>
+    </AgentStart>
+    <AgentHandlers>
+      <ObservationFromGrid>
+        <Grid name="voxelObs" absoluteCoords="false">
+          <min x="-3" y="0" z="-3"/>
+          <max x="3" y="0" z="3"/>
+        </Grid>
+      </ObservationFromGrid>
+      <ObservationFromNearbyEntities>
+        <Range name="nearbyEntities" xrange="7" yrange="1" zrange="7"/>
+      </ObservationFromNearbyEntities>
+      <ObservationFromFullStats/>
+      <ContinuousMovementCommands turnSpeedDegs="180"/>
+      <RewardForDamagingEntity>
+        <Mob type="Zombie" reward="5"/>
+      </RewardForDamagingEntity>
+      <RewardForTimeTaken initialReward="0" delta="-0.1" density="PER_TICK"/>
+      <AgentQuitFromReachingCommandQuota total="10000"/>
+    </AgentHandlers>
+  </AgentSection>
+
+  <!-- ===== PREDATOR 2 ===== -->
+  <AgentSection mode="Adventure">
+    <Name>Predator2</Name>
+    <AgentStart>
+      <Placement x="15" y="4" z="5" yaw="0"/>
+    </AgentStart>
+    <AgentHandlers>
+      <ObservationFromGrid>
+        <Grid name="voxelObs" absoluteCoords="false">
+          <min x="-3" y="0" z="-3"/>
+          <max x="3" y="0" z="3"/>
+        </Grid>
+      </ObservationFromGrid>
+      <ObservationFromNearbyEntities>
+        <Range name="nearbyEntities" xrange="7" yrange="1" zrange="7"/>
+      </ObservationFromNearbyEntities>
+      <ObservationFromFullStats/>
+      <ContinuousMovementCommands turnSpeedDegs="180"/>
+      <RewardForDamagingEntity>
+        <Mob type="Zombie" reward="5"/>
+      </RewardForDamagingEntity>
+      <RewardForTimeTaken initialReward="0" delta="-0.1" density="PER_TICK"/>
+      <AgentQuitFromReachingCommandQuota total="10000"/>
+    </AgentHandlers>
+  </AgentSection>
+
+  <!-- ===== PREY 1 ===== -->
+  <AgentSection mode="Adventure">
+    <Name>Prey1</Name>
+    <AgentStart>
+      <Placement x="5" y="4" z="15" yaw="0"/>
+    </AgentStart>
+    <AgentHandlers>
+      <ObservationFromGrid>
+        <Grid name="voxelObs" absoluteCoords="false">
+          <min x="-3" y="0" z="-3"/>
+          <max x="3" y="0" z="3"/>
+        </Grid>
+      </ObservationFromGrid>
+      <ObservationFromNearbyEntities>
+        <Range name="nearbyEntities" xrange="7" yrange="1" zrange="7"/>
+      </ObservationFromNearbyEntities>
+      <ObservationFromFullStats/>
+      <ContinuousMovementCommands turnSpeedDegs="180"/>
+      <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/>
+      <AgentQuitFromReachingCommandQuota total="10000"/>
+    </AgentHandlers>
+  </AgentSection>
+
+  <!-- ===== PREY 2 ===== -->
+  <AgentSection mode="Adventure">
+    <Name>Prey2</Name>
+    <AgentStart>
+      <Placement x="15" y="4" z="15" yaw="0"/>
+    </AgentStart>
+    <AgentHandlers>
+      <ObservationFromGrid>
+        <Grid name="voxelObs" absoluteCoords="false">
+          <min x="-3" y="0" z="-3"/>
+          <max x="3" y="0" z="3"/>
+        </Grid>
+      </ObservationFromGrid>
+      <ObservationFromNearbyEntities>
+        <Range name="nearbyEntities" xrange="7" yrange="1" zrange="7"/>
+      </ObservationFromNearbyEntities>
+      <ObservationFromFullStats/>
+      <ContinuousMovementCommands turnSpeedDegs="180"/>
+      <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/>
+      <AgentQuitFromReachingCommandQuota total="10000"/>
+    </AgentHandlers>
+  </AgentSection>
+
+</Mission>
