@@ -1,7 +1,6 @@
 from __future__ import annotations
 import random
 
-
 class RandomAgent:
     """Samples random multidiscrete actions."""
     def __init__(self, nMove: int = 3, nTurn: int = 3, nAttack: int = 2):

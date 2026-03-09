@@ -52,10 +52,10 @@
       </ObservationFromNearbyEntities>
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
-      <RewardForDamagingEntity>
-        <Mob type="Zombie" reward="5"/>
-      </RewardForDamagingEntity>
-      <RewardForTimeTaken initialReward="0" delta="-0.1" density="PER_TICK"/>
+      <!-- <RewardForDamagingEntity>
+        <Mob type="Player" reward="5"/>
+      </RewardForDamagingEntity> changing reward dynamics-->
+      <!-- <RewardForTimeTaken initialReward="0" delta="-0.1" density="PER_TICK"/> -->
       <AgentQuitFromReachingCommandQuota total="10000"/>
     </AgentHandlers>
   </AgentSection>
@@ -78,10 +78,10 @@
       </ObservationFromNearbyEntities>
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
-      <RewardForDamagingEntity>
-        <Mob type="Zombie" reward="5"/>
-      </RewardForDamagingEntity>
-      <RewardForTimeTaken initialReward="0" delta="-0.1" density="PER_TICK"/>
+      <!-- <RewardForDamagingEntity>
+        <Mob type="Player" reward="5"/>
+      </RewardForDamagingEntity> -->
+      <!-- <RewardForTimeTaken initialReward="0" delta="-0.1" density="PER_TICK"/> -->
       <AgentQuitFromReachingCommandQuota total="10000"/>
     </AgentHandlers>
   </AgentSection>
@@ -104,7 +104,7 @@
       </ObservationFromNearbyEntities>
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
-      <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/>
+      <!-- <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/> -->
       <AgentQuitFromReachingCommandQuota total="10000"/>
     </AgentHandlers>
   </AgentSection>
@@ -127,7 +127,7 @@
       </ObservationFromNearbyEntities>
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
-      <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/>
+      <!-- <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/> -->
       <AgentQuitFromReachingCommandQuota total="10000"/>
     </AgentHandlers>
   </AgentSection>

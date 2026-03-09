@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,12 +6,12 @@ import torch.nn.functional as F
 GRID_SIZE    = 7
 ENTITY_FEATS = 5  # (x, z, yaw, life, isSameTeam)
 
-
+# entities are what the agent observes
 class EntityAttention(nn.Module):
     """Attention pooling over variable-length nearby entity list."""
     def __init__(self, entityDim: int, hiddenDim: int):
         super().__init__()
-        self.entityEmbed = nn.Linear(ENTITY_FEATS, entityDim)
+        self.entityEmbed = nn.Linear(ENTITY_FEATS, entityDim) # embedding of cnn features
         self.queryProj   = nn.Linear(hiddenDim, entityDim)
         self.scale       = entityDim ** -0.5
 
@@ -23,6 +22,7 @@ class EntityAttention(nn.Module):
         entityMask: (B, maxEntities) — 1 for real, 0 for padding
         returns:    (B, entityDim)
         """
+        # B: number of batches being processed
         entityEmb = F.relu(self.entityEmbed(entities))          # (B, E, entityDim)
         query     = self.queryProj(cnnFeats).unsqueeze(2)        # (B, entityDim, 1)
         scores    = torch.bmm(entityEmb, query).squeeze(2)      # (B, E)
@@ -30,7 +30,7 @@ class EntityAttention(nn.Module):
         scores    = scores.masked_fill(entityMask == 0, -1e9)
         attnW     = F.softmax(scores, dim=-1)                   # (B, E)
         out       = torch.bmm(attnW.unsqueeze(1), entityEmb)    # (B, 1, entityDim)
-        return out.squeeze(1)                                    # (B, entityDim)
+        return out.squeeze(1)                                   # (B, entityDim)
 
 
 class VoxelEncoder(nn.Module):
@@ -58,7 +58,8 @@ class VoxelEncoder(nn.Module):
         # Project CNN output to hiddenDim before attention query
         self.cnnProj = nn.Linear(cnnFlatDim, cnnDim)
 
-        # Attention over nearby entities
+        # Attention over nearby entities (returns combined 
+        # embeddings of each entity weighted by attention score)
         self.entityAttn = EntityAttention(entityDim, cnnDim)
 
         # Agent stats encoder (pos x, pos z, yaw, life)

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,7 +25,7 @@ class OMHead(nn.Module):
 
         # Separate prediction head per action dimension
         self.moveHead   = nn.Linear(hiddenDim, N_MOVE)
-        self.turnHead   = nn.Linear(hiddenDim, N_TURN)
+        self.turnHead   = nn.Linear(hiddenDim, N_TURN) # could try continuous
         self.attackHead = nn.Linear(hiddenDim, N_ATTACK)
 
     def forward(self, encoderFeats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

@@ -1,10 +1,10 @@
-from __future__ import annotations
 """
 Random rollout test — verifies env, obs pipeline, and encoder forward pass.
 Run with: python experiments/testRandomRollout.py
 Requires 4 Minecraft clients running on ports 10000-10003.
 """
 
+from __future__ import annotations
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
