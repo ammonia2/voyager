@@ -1,5 +1,8 @@
 ## Project Malmo setup
 
+## Documentation
+See [PROJECT.md](PROJECT.md) for project structure, execution instructions, and design notes.
+
 ## Prerequisites
 
 Download and install these before anything else:
