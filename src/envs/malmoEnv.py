@@ -128,7 +128,7 @@ class MalmoEnv:
 
     def _getRewardsAll(self, obsAll: list[dict]) -> list[float]:
         # agent rewards computed manually to since there's no way to distinguish
-        # pplayer attack rewards in malmo (this way predator attacking predator isn't rewarded)
+        # player attack rewards in malmo (this way predator attacking predator isn't rewarded)
         preyIndices     = [2, 3]
         predatorIndices = [0, 1]
 
