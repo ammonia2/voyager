@@ -29,8 +29,7 @@
         <!-- Clear interior -->
         <DrawCuboid x1="1" y1="4" z1="1" x2="19" y2="6" z2="19" type="air"/>
       </DrawingDecorator>
-      <ServerQuitFromTimeUp timeLimitMs="60000" description="episode timeout"/>
-      <ServerQuitWhenAnyAgentFinishes/>
+      <!-- <ServerQuitFromTimeUp timeLimitMs="86400000" description="long-running training session"/> -->
     </ServerHandlers>
   </ServerSection>
 
@@ -52,11 +51,12 @@
       </ObservationFromNearbyEntities>
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
+      <AbsoluteMovementCommands/>
       <!-- <RewardForDamagingEntity>
         <Mob type="Player" reward="5"/>
       </RewardForDamagingEntity> changing reward dynamics-->
       <!-- <RewardForTimeTaken initialReward="0" delta="-0.1" density="PER_TICK"/> -->
-      <AgentQuitFromReachingCommandQuota total="10000"/>
+      <!-- <AgentQuitFromReachingCommandQuota total="10000"/> -->
     </AgentHandlers>
   </AgentSection>
 
@@ -78,11 +78,12 @@
       </ObservationFromNearbyEntities>
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
+      <AbsoluteMovementCommands/>
       <!-- <RewardForDamagingEntity>
         <Mob type="Player" reward="5"/>
       </RewardForDamagingEntity> -->
       <!-- <RewardForTimeTaken initialReward="0" delta="-0.1" density="PER_TICK"/> -->
-      <AgentQuitFromReachingCommandQuota total="10000"/>
+      <!-- <AgentQuitFromReachingCommandQuota total="10000"/> -->
     </AgentHandlers>
   </AgentSection>
 
@@ -104,8 +105,9 @@
       </ObservationFromNearbyEntities>
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
+      <AbsoluteMovementCommands/>
       <!-- <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/> -->
-      <AgentQuitFromReachingCommandQuota total="10000"/>
+      <!-- <AgentQuitFromReachingCommandQuota total="10000"/> -->
     </AgentHandlers>
   </AgentSection>
 
@@ -127,8 +129,9 @@
       </ObservationFromNearbyEntities>
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
+      <AbsoluteMovementCommands/>
       <!-- <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/> -->
-      <AgentQuitFromReachingCommandQuota total="10000"/>
+      <!-- <AgentQuitFromReachingCommandQuota total="10000"/> -->
     </AgentHandlers>
   </AgentSection>
 

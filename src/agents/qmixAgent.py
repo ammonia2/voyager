@@ -2,6 +2,7 @@ from __future__ import annotations
 from .qmixMixer import Mixer
 import torch, torch.nn.functional as F
 import torch.nn as nn
+from pathlib import Path
 
 N_MOVE   = 3
 N_TURN   = 3
@@ -74,3 +75,25 @@ class QMIX:
         """hard copy live weights into target networks"""
         self.targetAgentNet.load_state_dict(self.agentNet.state_dict())
         self.targetMixer.load_state_dict(self.mixer.state_dict())
+
+    def saveCheckpoint(self, checkpointPath: str, extraState: dict | None = None):
+        path = Path(checkpointPath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "agentNet": self.agentNet.state_dict(),
+            "mixer": self.mixer.state_dict(),
+            "targetAgentNet": self.targetAgentNet.state_dict(),
+            "targetMixer": self.targetMixer.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "extra": extraState or {},
+        }
+        torch.save(payload, str(path))
+
+    def loadCheckpoint(self, checkpointPath: str) -> dict:
+        payload = torch.load(checkpointPath, map_location=self.device)
+        self.agentNet.load_state_dict(payload["agentNet"])
+        self.mixer.load_state_dict(payload["mixer"])
+        self.targetAgentNet.load_state_dict(payload["targetAgentNet"])
+        self.targetMixer.load_state_dict(payload["targetMixer"])
+        self.optimizer.load_state_dict(payload["optimizer"])
+        return payload.get("extra", {})
