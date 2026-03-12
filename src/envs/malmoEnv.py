@@ -18,6 +18,10 @@ AGENT_NAMES  = ["Predator1", "Predator2", "Prey1", "Prey2"]
 BASE_PORT    = 10000
 GRID_SIZE    = 7 # could increase to 9x9 or decrease to 5x5
 STEP_SLEEP   = 0.1  # seconds between steps
+RESET_WAIT_TIMEOUT = 30.0
+CLIENT_POOL_COOLDOWN = 2.0
+MISSION_START_RETRIES = 10
+MISSION_START_RETRY_DELAY = 3.0
 
 BLOCK_TO_ID = {
     'air': 0, 'stone': 1, 'stonebrick': 2, 'grass': 3,
@@ -39,12 +43,15 @@ class MalmoEnv:
         return pool
 
     def reset(self) -> list[dict]:
+        self._ensureMissionStopped()
+        time.sleep(CLIENT_POOL_COOLDOWN)
+
         mission       = MalmoPython.MissionSpec(self.missionXml, True)
         missionRecord = MalmoPython.MissionRecordSpec()
         experimentId  = str(int(time.time()))  # unique per episode
 
         for i, host in enumerate(self.agentHosts):
-            host.startMission(mission, self.clientPool, missionRecord, i, experimentId)
+            self._startMissionWithRetries(host, mission, missionRecord, i, experimentId)
             if i == 0:
                 time.sleep(30)  # role 0 needs time to start the server
             else:
@@ -54,6 +61,55 @@ class MalmoEnv:
         obsAll = self._getObsAll()
         self.prevHealth = [obs["life"] for obs in obsAll]
         return self._getObsAll()
+
+    def _ensureMissionStopped(self, timeout: float = RESET_WAIT_TIMEOUT):
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            runningHosts = []
+            for host in self.agentHosts:
+                worldState = host.getWorldState()
+                if worldState.is_mission_running:
+                    runningHosts.append(host)
+
+            if not runningHosts:
+                return
+
+            for host in runningHosts:
+                try:
+                    host.sendCommand("quit")
+                except RuntimeError:
+                    pass
+
+            time.sleep(1.0)
+
+        raise RuntimeError("Timed out waiting for the previous Malmo mission to stop.")
+
+    def _startMissionWithRetries(
+        self,
+        host: MalmoPython.AgentHost,
+        mission: MalmoPython.MissionSpec,
+        missionRecord: MalmoPython.MissionRecordSpec,
+        role: int,
+        experimentId: str,
+        retries: int = MISSION_START_RETRIES,
+        retryDelay: float = MISSION_START_RETRY_DELAY,
+    ):
+        lastError = None
+
+        for attempt in range(retries):
+            try:
+                host.startMission(mission, self.clientPool, missionRecord, role, experimentId)
+                return
+            except MalmoPython.MissionException as exc:
+                lastError = exc
+                if attempt == retries - 1:
+                    break
+                time.sleep(retryDelay)
+
+        raise RuntimeError(
+            f"Failed to start Malmo mission for role {role} after {retries} attempts: {lastError}"
+        )
 
     def step(self, actions: list[tuple[int, int, int]]) -> tuple[list, list, list]:
         """

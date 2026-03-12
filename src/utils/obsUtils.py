@@ -55,3 +55,14 @@ def batchObsAllAgents(obsAll: list[dict], agentNames: list[str],
         obsToTensor(obsAll[i], i, agentNames, device)
         for i in range(len(obsAll))
     ])
+
+def buildGlobalState(obsAll: list[dict], agentNames: list[str]) -> np.ndarray:
+    """
+    Concatenates each agent's pos, life, yaw into a flat global state vector.
+    stateDim = nAgents * 4 = 16
+    """
+    parts = []
+    for obs in obsAll:
+        parts.append(obs["pos"] / 20.0)
+        parts.append(np.array([obs["life"] / 20.0, obs["yaw"] / 180.0]))
+    return np.concatenate(parts).astype(np.float32)

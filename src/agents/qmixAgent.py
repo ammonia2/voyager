@@ -1,5 +1,5 @@
 from __future__ import annotations
-from agents.qmixMixer import Mixer
+from .qmixMixer import Mixer
 import torch, torch.nn.functional as F
 import torch.nn as nn
 
