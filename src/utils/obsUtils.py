@@ -1,68 +1,95 @@
 from __future__ import annotations
 import numpy as np
-import torch
 
-MAX_ENTITIES = 3
-ENTITY_FEATS = 5  # (x, z, yaw, life, isSameTeam)
-OBS_DIM      = 49 + 2 + 1 + 1 + 1 + MAX_ENTITIES * ENTITY_FEATS  # 69
+GRID_SIZE         = 7
+N_MOVE            = 3
+N_TURN            = 3
+N_ATTACK          = 2
+ACTION_ONEHOT_DIM = N_MOVE + N_TURN + N_ATTACK  # 8
 
-def flattenObs(obs: dict, agentId: int, agentNames: list[str]) -> np.ndarray:
+NUM_AGENTS        = 3
+PREDATOR_INDICES  = [0, 1]
+PREY_INDICES      = [2]
+
+# Each agent sees 2 opponents regardless of role:
+#   predators: 1 prey + 1 teammate predator
+#   prey:      2 predators
+# self(4) + 2*(rel_pos(2)+life(1)+action_oh(8)) + voxel(49) = 75
+MAX_OPPONENTS = 2
+OBS_DIM       = 4 + MAX_OPPONENTS * (2 + 1 + ACTION_ONEHOT_DIM) + GRID_SIZE * GRID_SIZE  # 75
+
+
+def _actionToOnehot(moveIdx: int, turnIdx: int, attackIdx: int) -> np.ndarray:
+    """Concatenated per-head one-hot of length 8."""
+    oh = np.zeros(ACTION_ONEHOT_DIM, dtype=np.float32)
+    oh[moveIdx]                   = 1.0
+    oh[N_MOVE + turnIdx]          = 1.0
+    oh[N_MOVE + N_TURN + attackIdx] = 1.0
+    return oh
+
+
+def _opponentIndices(agentIdx: int) -> list[int]:
     """
-    Flattens raw obs dict from malmoEnv into a fixed-size vector.
-    agentId:    0-3 integer, concatenated so shared network can differentiate agents
-    agentNames: ordered list of agent name strings e.g. ['Predator1', ...]
+    Predators treat the other predator as a generic opponent alongside the prey.
+    Prey treats both predators as opponents.
     """
-    voxel = obs["voxelGrid"]                          # (49,)
-    pos   = obs["pos"]                                # (2,)
-    life  = np.array([obs["life"] / 20.0])            # normalise to [0,1]
-    yaw   = np.array([obs["yaw"] / 180.0])            # normalise to [-1,1]
-    aid   = np.array([agentId / 3.0])                 # normalise to [0,1]
+    if agentIdx in PREDATOR_INDICES:
+        otherPred = [i for i in PREDATOR_INDICES if i != agentIdx]
+        return otherPred + PREY_INDICES   # [other_pred, prey] — always length 2
+    else:
+        return PREDATOR_INDICES           # [pred0, pred1]
 
-    # build entity matrix, zero-pad to MAX_ENTITIES
-    entityArr = np.zeros((MAX_ENTITIES, ENTITY_FEATS), dtype=np.float32)
-    for i, ent in enumerate(obs["nearbyEntities"][:MAX_ENTITIES]):
-        isSameTeam = _isSameTeam(agentId, ent["name"], agentNames)
-        entityArr[i] = [
-            ent["x"] / 20.0,          # normalise to arena size
-            ent["z"] / 20.0,
-            ent.get("yaw", 0.0) / 180.0,
-            ent.get("life", 20.0) / 20.0,
-            float(isSameTeam),
-        ]
 
-    return np.concatenate([voxel, pos / 20.0, life, yaw, aid, entityArr.flatten()])
-
-def _isSameTeam(agentId: int, entityName: str, agentNames: list[str]) -> bool:
-    """Predators are indices 0,1 — Prey are 2,3."""
-    predators = {agentNames[0], agentNames[1]}
-    isPredator = agentId < 2
-    entityIsPredator = entityName in predators
-    return isPredator == entityIsPredator
-
-def obsToTensor(obs: dict, agentId: int, agentNames: list[str], 
-                device: torch.device) -> torch.Tensor:
-    """Convenience wrapper — flat np array to tensor."""
-    flat = flattenObs(obs, agentId, agentNames)
-    return torch.tensor(flat, dtype=torch.float32, device=device)
-
-def batchObsAllAgents(obsAll: list[dict], agentNames: list[str],
-                      device: torch.device) -> torch.Tensor:
+def flattenObs(
+    agentIdx: int,
+    obs: dict,
+    obsAll: list[dict],
+    lastActionsAll: list[tuple[int, int, int]],
+) -> np.ndarray:
     """
-    Converts obs for all agents into a single batched tensor.
-    returns: (nAgents, obsDim)
+    Flatten one agent's observation to a fixed vector of shape (OBS_DIM=75,).
+    agentIdx:       which agent (0-2)
+    obs:            this agent's parsed obs dict from malmoEnv
+    obsAll:         all 3 agents' parsed obs dicts
+    lastActionsAll: list of (moveIdx, turnIdx, attackIdx) for all 3 agents
     """
-    return torch.stack([
-        obsToTensor(obsAll[i], i, agentNames, device)
-        for i in range(len(obsAll))
+    selfVec = np.array([
+        obs["pos"][0],
+        obs["pos"][1],
+        obs["yaw"] / 180.0,
+        obs["life"] / 20.0,
+    ], dtype=np.float32)
+
+    oppVecs = []
+    for oppIdx in _opponentIndices(agentIdx):
+        oppObs = obsAll[oppIdx]
+        relPos   = (oppObs["pos"] - obs["pos"]) / 20.0
+        life     = np.array([oppObs["life"] / 20.0], dtype=np.float32)
+        m, t, a  = lastActionsAll[oppIdx]
+        actionOh = _actionToOnehot(m, t, a)
+        oppVecs.append(np.concatenate([relPos, life, actionOh]))  # (11,)
+
+    voxel  = obs["voxelGrid"].astype(np.float32) / 15.0
+    result = np.concatenate([selfVec] + oppVecs + [voxel])
+    assert result.shape == (OBS_DIM,), f"obs dim mismatch: {result.shape}"
+    return result
+
+
+def flattenObsAll(
+    obsAll: list[dict],
+    lastActionsAll: list[tuple[int, int, int]],
+) -> np.ndarray:
+    """Returns (NUM_AGENTS, OBS_DIM)."""
+    return np.stack([
+        flattenObs(i, obsAll[i], obsAll, lastActionsAll)
+        for i in range(NUM_AGENTS)
     ])
 
-def buildGlobalState(obsAll: list[dict], agentNames: list[str]) -> np.ndarray:
-    """
-    Concatenates each agent's pos, life, yaw into a flat global state vector.
-    stateDim = nAgents * 4 = 16
-    """
-    parts = []
-    for obs in obsAll:
-        parts.append(obs["pos"] / 20.0)
-        parts.append(np.array([obs["life"] / 20.0, obs["yaw"] / 180.0]))
-    return np.concatenate(parts).astype(np.float32)
+
+def buildGlobalState(flatObsAll: np.ndarray) -> np.ndarray:
+    """(NUM_AGENTS, OBS_DIM) -> (NUM_AGENTS * OBS_DIM,) = (225,)"""
+    return flatObsAll.flatten()
+
+
+def actionToOnehot(moveIdx: int, turnIdx: int, attackIdx: int) -> np.ndarray:
+    return _actionToOnehot(moveIdx, turnIdx, attackIdx)
