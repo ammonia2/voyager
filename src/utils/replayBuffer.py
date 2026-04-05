@@ -1,56 +1,57 @@
 from __future__ import annotations
+import numpy as np
+from collections import deque
 import random
-import pickle
-from pathlib import Path
-from dataclasses import dataclass, field
 
-@dataclass
-class Episode:
-    observations: list = field(default_factory=list) # to prevent sharing same list object across instances
-    actions: list = field(default_factory=list)
-    rewards:list = field(default_factory=list)
-    states: list = field(default_factory=list)
-    dones:list = field(default_factory=list)
-
-    def __len__(self):
-        return len(self.rewards)
 
 class ReplayBuffer:
-    def __init__(self, maxEpisodes: int = 1000):
-        self.maxEpisodes = maxEpisodes
-        self.buffer: list[Episode] = []
+    """
+    Stores transitions for all agents simultaneously.
+    Each transition: (obsAll, actionsAll, rewardsAll, nextObsAll, dones)
+      obsAll:     (NUM_AGENTS, OBS_DIM) float32
+      actionsAll: (NUM_AGENTS, 3)       int   - (moveIdx, turnIdx, attackIdx)
+      rewardsAll: (NUM_AGENTS,)         float32
+      nextObsAll: (NUM_AGENTS, OBS_DIM) float32
+      dones:      (NUM_AGENTS,)         bool
+    """
 
-    def addEpisode(self, episode: Episode):
-        if len(self.buffer) >= self.maxEpisodes:
-            self.buffer.pop(0)
-        self.buffer.append(episode)
+    def __init__(self, capacity: int):
+        self.buffer = deque(maxlen=capacity)
 
-    def sample(self, batchSize: int) -> list[Episode]:
-        return random.sample(self.buffer, min(batchSize, len(self.buffer)))
+    def push(
+        self,
+        obsAll: np.ndarray,
+        actionsAll: np.ndarray,
+        rewardsAll: np.ndarray,
+        nextObsAll: np.ndarray,
+        dones: np.ndarray,
+    ):
+        self.buffer.append((
+            obsAll.astype(np.float32),
+            actionsAll.astype(np.int64),
+            rewardsAll.astype(np.float32),
+            nextObsAll.astype(np.float32),
+            dones.astype(np.float32),
+        ))
 
-    def __len__(self):
+    def sample(self, batchSize: int) -> tuple:
+        """
+        Returns batched numpy arrays:
+          obsAll:     (B, NUM_AGENTS, OBS_DIM)
+          actionsAll: (B, NUM_AGENTS, 3)
+          rewardsAll: (B, NUM_AGENTS)
+          nextObsAll: (B, NUM_AGENTS, OBS_DIM)
+          dones:      (B, NUM_AGENTS)
+        """
+        batch = random.sample(self.buffer, batchSize)
+        obsAll, actionsAll, rewardsAll, nextObsAll, dones = zip(*batch)
+        return (
+            np.stack(obsAll),
+            np.stack(actionsAll),
+            np.stack(rewardsAll),
+            np.stack(nextObsAll),
+            np.stack(dones),
+        )
+
+    def __len__(self) -> int:
         return len(self.buffer)
-
-    def save(self, filePath: str):
-        path = Path(filePath)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "maxEpisodes": self.maxEpisodes,
-            "buffer": self.buffer,
-        }
-        with path.open("wb") as f:
-            pickle.dump(payload, f)
-
-    def load(self, filePath: str):
-        path = Path(filePath)
-        if not path.exists():
-            return False
-
-        with path.open("rb") as f:
-            payload = pickle.load(f)
-
-        self.maxEpisodes = payload.get("maxEpisodes", self.maxEpisodes)
-        self.buffer = payload.get("buffer", [])
-        if len(self.buffer) > self.maxEpisodes:
-            self.buffer = self.buffer[-self.maxEpisodes:]
-        return True

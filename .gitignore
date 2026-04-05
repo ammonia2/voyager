@@ -1,3 +1,7 @@
+runs/
+checkpoints/
+*.pdf
+
 .vscode
 
 # Byte-compiled / optimized / DLL files
