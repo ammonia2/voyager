@@ -87,35 +87,11 @@
     </AgentHandlers>
   </AgentSection>
 
-  <!-- ===== PREY 1 ===== -->
+  <!-- ===== PREY ===== -->
   <AgentSection mode="Adventure">
     <Name>Prey1</Name>
     <AgentStart>
-      <Placement x="5" y="4" z="15" yaw="0"/>
-    </AgentStart>
-    <AgentHandlers>
-      <ObservationFromGrid>
-        <Grid name="voxelObs" absoluteCoords="false">
-          <min x="-3" y="0" z="-3"/>
-          <max x="3" y="0" z="3"/>
-        </Grid>
-      </ObservationFromGrid>
-      <ObservationFromNearbyEntities>
-        <Range name="nearbyEntities" xrange="7" yrange="1" zrange="7"/>
-      </ObservationFromNearbyEntities>
-      <ObservationFromFullStats/>
-      <ContinuousMovementCommands turnSpeedDegs="180"/>
-      <AbsoluteMovementCommands/>
-      <!-- <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/> -->
-      <!-- <AgentQuitFromReachingCommandQuota total="10000"/> -->
-    </AgentHandlers>
-  </AgentSection>
-
-  <!-- ===== PREY 2 ===== -->
-  <AgentSection mode="Adventure">
-    <Name>Prey2</Name>
-    <AgentStart>
-      <Placement x="15" y="4" z="15" yaw="0"/>
+      <Placement x="10" y="4" z="15" yaw="0"/>
     </AgentStart>
     <AgentHandlers>
       <ObservationFromGrid>
