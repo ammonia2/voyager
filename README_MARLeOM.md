@@ -1,66 +1,73 @@
-# MARLeOM Paper vs This Implementation
+# MARLeOM Implementation Spec (This Branch)
 
-This document summarizes what the paper describes and how the current codebase implements it.
+This document gives a concise, code-accurate summary of the current MARLeOM branch.
 
-## 1. What The Paper Says
+## 1. Scope
 
-The paper describes MARLeOM under CTDE and emphasizes opponent modeling with these key ideas:
+1. MARLeOM training pipeline for predator-prey in Malmo (2 predators, 1 prey).
+2. Persistent mission runtime with soft episode resets.
+3. Opponent-modeling based CTDE agent with discrete SAC-style updates.
+4. Module reorganization for cleaner model and environment structure.
 
-1. Build an opponent modeling module to predict adversary behavior.
-2. Use recursive reasoning to construct hierarchical opponent models (level-0, level-1, ..., level-m).
-3. Use an environment model and rollout to approximate opponent best responses.
-4. Fuse multi-level opponent models with Bayesian-weighted mixing.
-5. In decentralized execution, each actor uses local observation plus predicted opponent actions.
+## 2. Core Algorithm (Implemented)
 
-## 2. What This Repository Implements
+Main implementation: [src/agents/marleom.py](src/agents/marleom.py)
 
-### 2.1 CTDE structure
+1. CTDE setup:
+	1. Per-predator decentralized actors.
+	2. Per-predator centralized double critics.
+	3. Replay-buffer off-policy training with target critics.
+2. Opponent modeling:
+	1. Level-0 model learns from observed prey actions.
+	2. Level-1 model learns critic-guided pseudo best-response labels.
+	3. Bayesian posterior-style weights are maintained for L0/L1 mixing.
+3. Level-1 target generation:
+	1. One-step exhaustive search over prey action combinations.
+	2. Select action minimizing summed predator value under current critics.
+4. Policy/entropy details:
+	1. Auto-tuned alpha (SAC-v2 style).
+	2. Target-entropy schedule with stability gating.
+	3. Additional entropy regularization for stability.
 
-Implemented in [src/agents/marleom.py](src/agents/marleom.py):
+## 3. Environment Runtime (Implemented)
 
-1. Decentralized actors for predator agents.
-2. Centralized double critics consuming global state and joint actions.
-3. Off-policy replay and target critics.
+Environment module: [src/envs/marleomEnv.py](src/envs/marleomEnv.py)
 
-### 2.2 Opponent modeling currently implemented
+1. Mission is kept alive across episodes when possible.
+2. Episode boundaries use soft resets (teleport/reset commands + health checks).
+3. Restart path is fallback-only and triggered when mission is confirmed dead.
+4. Start/restart paths include retry handling and cooldowns.
 
-Implemented across [src/agents/marleom.py](src/agents/marleom.py) and [src/agents/opponentModel.py](src/agents/opponentModel.py):
+Mission config: [configs/missionPredatorPrey.xml](configs/missionPredatorPrey.xml)
 
-1. Two opponent models are maintained:
-2. Level-0 model (behavioral imitation from observed prey actions).
-3. Level-1 model (critic-guided pseudo best-response labels).
-4. Actor input uses a mixed prediction from level-0 and level-1 models.
+1. Config is aligned for long-running sessions (forced-quit handlers disabled).
+2. Agent layout is 2 predators + 1 prey.
 
-### 2.3 How level-1 is approximated here
+## 4. Training Script Behavior
 
-In [src/agents/marleom.py](src/agents/marleom.py), level-1 targets are built by one-step exhaustive search over prey actions:
+Training entrypoint: [experiments/trainMarleom.py](experiments/trainMarleom.py)
 
-1. Keep predator actions fixed from replay.
-2. Evaluate each prey action with current critics.
-3. Choose the prey action minimizing summed predator value.
-4. Train level-1 opponent model to predict that action from prey observation.
+1. Warmup with random actions then MARLeOM policy updates.
+2. Prey uses scripted policy during early episodes, then trainable prey actor.
+3. Episode diagnostics include:
+	1. critic/actor/OM losses,
+	2. alpha and entropy metrics,
+	3. level-mix and Bayesian mix weights.
+4. Win reporting:
+	1. exact cumulative win%,
+	2. rolling-100 win% for smoother local trend.
 
-This is a practical approximation of rollout-based best-response reasoning.
+## 5. Code Organization (Updated)
 
-## 3. Differences From Full Paper Method
+1. Model definitions moved to [src/models](src/models):
+	1. [src/models/actorNetwork.py](src/models/actorNetwork.py)
+	2. [src/models/centralisedCritic.py](src/models/centralisedCritic.py)
+	3. [src/models/opponentModel.py](src/models/opponentModel.py)
+2. MARLeOM environment renamed from old malmoEnv2 to [src/envs/marleomEnv.py](src/envs/marleomEnv.py).
+3. Imports in agent/training code were updated to match these paths.
 
-The current implementation is intentionally lighter than the full method in the paper:
+## 6. Known Simplifications vs Full Paper
 
-1. No learned environment transition model is trained in this repo for simulated rollouts.
-2. Recursive depth is limited to two levels (L0 and L1), not arbitrary level-m.
-3. Model fusion is fixed-weight mixing (`levelMix`) rather than Bayesian adaptive weighting.
-4. Opponent policy in training script is still scripted prey behavior in [experiments/trainMarleom.py](experiments/trainMarleom.py), so adaptation pressure is lower than fully learning opponents.
-
-## 4. Where To Look In Code
-
-1. Training entrypoint: [experiments/trainMarleom.py](experiments/trainMarleom.py)
-2. Main MARLeOM agent: [src/agents/marleom.py](src/agents/marleom.py)
-3. Opponent model network: [src/agents/opponentModel.py](src/agents/opponentModel.py)
-4. Critic network: [src/agents/centralisedCritic.py](src/agents/centralisedCritic.py)
-5. Observation shaping for opponent information: [src/utils/obsUtils.py](src/utils/obsUtils.py)
-
-## 5. Practical Notes
-
-1. New checkpoints now store `oppModelL0` and `oppModelL1`.
-2. Backward compatibility is included: older checkpoints with only `oppModel` can still be loaded.
-3. TensorBoard now logs `Loss/oppModelL0` and `Loss/oppModelL1` in addition to total opponent loss.
+1. No learned world model for long rollout-based opponent planning.
+2. Opponent hierarchy depth is limited to L0/L1.
+3. Level-1 best response is one-step critic-guided approximation (not full rollout planning).
