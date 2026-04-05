@@ -2,6 +2,7 @@ from __future__ import annotations
 import MalmoPython
 import json
 import time
+import random
 import numpy as np
 from pathlib import Path
 
@@ -13,20 +14,49 @@ NUM_AGENTS       = 3
 AGENT_NAMES      = ["Predator1", "Predator2", "Prey1"]
 PREDATOR_INDICES = [0, 1]
 PREY_INDICES     = [2]
-SPAWN_POINTS     = [
-    (5.0, 4.0, 5.0, 0.0),
-    (15.0, 4.0, 5.0, 0.0),
-    (10.0, 4.0, 15.0, 0.0),
-]
 BASE_PORT        = 10000
 GRID_SIZE        = 7
 STEP_SLEEP       = 0.1
 RESET_SETTLE_TIME = 0.3
-RESET_WAIT_TIMEOUT = 30.0
+RESET_WAIT_TIMEOUT = 120.0
 CLIENT_POOL_COOLDOWN = 2.0
+SOFT_RESET_MAX_TRIES = 12
+SOFT_RESET_FALLBACK_WINDOW = 8.0
 
-ARENA_MIN = 1.0
-ARENA_MAX = 19.0
+ARENA_MIN = 2.0   # keep away from walls
+ARENA_MAX = 18.0
+SPAWN_Y   = 4.0
+MIN_SPAWN_DIST = 8.0  # minimum distance between any two agents at spawn — must be > MELEE_RANGE
+
+
+def _randomSpawnPoints() -> list[tuple[float, float, float, float]]:
+    """
+    Sample random spawn positions for all agents each episode.
+    Ensures no two agents start within MIN_SPAWN_DIST of each other.
+    Yaw is also randomised so predators don't always face the same direction.
+    """
+    positions: list[tuple[float, float]] = []
+    max_tries = 200
+    for _ in range(NUM_AGENTS):
+        for _ in range(max_tries):
+            x = random.uniform(ARENA_MIN, ARENA_MAX)
+            z = random.uniform(ARENA_MIN, ARENA_MAX)
+            if all(
+                ((x - px) ** 2 + (z - pz) ** 2) ** 0.5 >= MIN_SPAWN_DIST
+                for px, pz in positions
+            ):
+                positions.append((x, z))
+                break
+        else:
+            # Fallback: accept wherever (extremely unlikely to trigger)
+            positions.append((
+                random.uniform(ARENA_MIN, ARENA_MAX),
+                random.uniform(ARENA_MIN, ARENA_MAX),
+            ))
+    return [
+        (x, SPAWN_Y, z, random.uniform(0.0, 360.0))
+        for x, z in positions
+    ]
 
 BLOCK_TO_ID = {
     'air': 0, 'stone': 1, 'stonebrick': 2, 'grass': 3,
@@ -40,8 +70,11 @@ class MalmoEnv:
         self.missionXml  = Path(missionXmlPath).read_text()
         self.agentHosts  = [MalmoPython.AgentHost() for _ in range(NUM_AGENTS)]
         self.clientPool  = self._buildClientPool()
-        self.prevHealth  = []
+        self.prevHealth     = []
         self.missionStarted = False
+        self.preyWasTagged  = False
+        self.episodeSteps   = 0
+        self._spawnPoints: list[tuple[float, float, float, float]] = _randomSpawnPoints()
 
     def _buildClientPool(self) -> MalmoPython.ClientPool:
         pool = MalmoPython.ClientPool()
@@ -50,12 +83,27 @@ class MalmoEnv:
         return pool
 
     def reset(self) -> list[dict]:
-        if not self.missionStarted or not self._allMissionsRunning():
-            self._startMission()
+        # New random spawn layout every episode
+        self._spawnPoints = _randomSpawnPoints()
+
+        self.preyWasTagged = False
+        self.episodeSteps  = 0
+
+        running = self.missionStarted and self._allMissionsRunning()
+        if not running:
+            self._restartMission()
         else:
-            resetOk = self._softResetEpisode()
+            resetOk = self._softResetEpisode(maxTries=SOFT_RESET_MAX_TRIES)
             if not resetOk:
-                self._restartMission()
+                # Keep the mission alive and keep trying soft reset for a short window.
+                # Only hard-restart if mission is actually dead.
+                deadline = time.time() + SOFT_RESET_FALLBACK_WINDOW
+                while time.time() < deadline and self._allMissionsRunning():
+                    if self._softResetEpisode(maxTries=2):
+                        resetOk = True
+                        break
+                if not resetOk and not self._allMissionsRunning():
+                    self._restartMission()
 
         self._waitForAllAgents()
         obsAll          = self._getObsAll()
@@ -70,28 +118,46 @@ class MalmoEnv:
     def _startMission(self):
         mission       = MalmoPython.MissionSpec(self.missionXml, True)
         missionRecord = MalmoPython.MissionRecordSpec()
-        experimentId  = str(int(time.time()))
+        maxStartRetries = 3
 
-        for i, host in enumerate(self.agentHosts):
-            host.startMission(mission, self.clientPool, missionRecord, i, experimentId)
-            if i == 0:
-                time.sleep(30)
-            else:
-                time.sleep(1)
+        for attempt in range(maxStartRetries):
+            experimentId = str(int(time.time() * 1000))
+            try:
+                for i, host in enumerate(self.agentHosts):
+                    host.startMission(mission, self.clientPool, missionRecord, i, experimentId)
+                    if i == 0:
+                        time.sleep(30)
+                    else:
+                        time.sleep(1)
 
-        self.missionStarted = True
+                self.missionStarted = True
+                return
+            except RuntimeError:
+                if attempt == maxStartRetries - 1:
+                    raise
+                time.sleep(CLIENT_POOL_COOLDOWN)
 
-    def _softResetEpisode(self) -> bool:
-        for _ in range(3):
+    # How many initial steps to ignore health deltas after a reset —
+    # guards against in-flight attack commands from the previous episode.
+    RESET_GRACE_STEPS = 2
+
+    def _softResetEpisode(self, maxTries: int = 3) -> bool:
+        for _ in range(maxTries):
+            if not self._allMissionsRunning():
+                return False
+
             for i, host in enumerate(self.agentHosts):
-                x, y, z, yaw = SPAWN_POINTS[i]
-                for cmd in ("move 0", "turn 0", "attack 0", f"tp {x} {y} {z}", f"setYaw {yaw}"):
+                x, y, z, yaw = self._spawnPoints[i]
+                for cmd in ("attack 0", "move 0", "turn 0",
+                            f"tp {x} {y} {z}", f"setYaw {yaw}", "setHealth 20",
+                            "attack 0"):   # second attack 0 flushes any in-flight hit
                     try:
                         host.sendCommand(cmd)
                     except RuntimeError:
                         pass
 
-            time.sleep(RESET_SETTLE_TIME)
+            # Longer settle so Malmo processes all commands before we read obs
+            time.sleep(RESET_SETTLE_TIME * 2)
 
             obsAll = self._getObsAll()
             if self._isResetStateHealthy(obsAll):
@@ -196,26 +262,50 @@ class MalmoEnv:
             "yaw":            0.0,
         }
 
+    # Tag reward: landing the first hit ends the episode.
+    # Predator in melee range gets the full win bonus; both get it if both
+    # are in range (cooperative tag).  Time penalty keeps predators from stalling.
+    MELEE_RANGE  = 3.5
+    TAG_REWARD   = 10.0   # predator reward on successful tag
+    TAG_PENALTY  = -10.0  # prey reward on being tagged
+    TIME_PENALTY = 0.3    # per-step cost for predators
+
     def _getRewardsAll(self, obsAll: list[dict]) -> list[float]:
-        healthDeltas    = [self.prevHealth[i] - obsAll[i]["life"] for i in range(NUM_AGENTS)]
-        self.prevHealth = [obs["life"] for obs in obsAll]
+        healthDeltas       = [self.prevHealth[i] - obsAll[i]["life"] for i in range(NUM_AGENTS)]
+        self.prevHealth    = [obs["life"] for obs in obsAll]
+        self.episodeSteps += 1
+
+        preyPos  = obsAll[PREY_INDICES[0]]["pos"]
+        # Ignore health deltas during grace steps — in-flight attacks from the
+        # previous episode can register as hits on step 1 or 2 after reset.
+        preyHit  = (healthDeltas[PREY_INDICES[0]] > 0
+                    and self.episodeSteps > self.RESET_GRACE_STEPS)
+        self.preyWasTagged = preyHit
 
         rewards = []
         for i in range(NUM_AGENTS):
             if i in PREDATOR_INDICES:
-                preyDamage   = max(0, healthDeltas[PREY_INDICES[0]])
-                friendlyFire = sum(max(0, healthDeltas[j]) for j in PREDATOR_INDICES if j != i)
-                rewards.append(preyDamage * 5 - friendlyFire * 5 - 0.1)
+                if preyHit:
+                    predPos = obsAll[i]["pos"]
+                    dist    = float(np.linalg.norm(predPos - preyPos))
+                    inRange = dist <= self.MELEE_RANGE
+                    # Both predators get the win bonus if either is in range —
+                    # cooperative tag, credit the whole team.
+                    tagCredit = self.TAG_REWARD if inRange else 0.0
+                else:
+                    tagCredit = 0.0
+                rewards.append(tagCredit - self.TIME_PENALTY)
             else:
-                rewards.append(0.1 - max(0, healthDeltas[i]) * 5)
+                rewards.append(self.TAG_PENALTY if preyHit else 0.1)
 
         return rewards
 
     def _getDonesAll(self) -> list[bool]:
-        dones = [not host.getWorldState().is_mission_running for host in self.agentHosts]
-        if any(dones):
+        missionDead = not self._allMissionsRunning()
+        if missionDead:
             self.missionStarted = False
-        return dones
+        done = missionDead or self.preyWasTagged
+        return [done] * NUM_AGENTS
 
     @property
     def numActions(self) -> tuple[int, int, int]:

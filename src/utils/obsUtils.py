@@ -40,6 +40,10 @@ def _opponentIndices(agentIdx: int) -> list[int]:
         return PREDATOR_INDICES           # [pred0, pred1]
 
 
+ARENA_CENTER = 10.0   # arena runs 1-19, centre at 10
+ARENA_HALF   = 9.0    # half-width for normalisation
+
+
 def flattenObs(
     agentIdx: int,
     obs: dict,
@@ -52,10 +56,14 @@ def flattenObs(
     obs:            this agent's parsed obs dict from malmoEnv
     obsAll:         all 3 agents' parsed obs dicts
     lastActionsAll: list of (moveIdx, turnIdx, attackIdx) for all 3 agents
+
+    Self position is encoded as arena-centre-relative (not absolute) so the
+    policy generalises across random spawn locations instead of memorising
+    spawn-specific behaviours.
     """
     selfVec = np.array([
-        obs["pos"][0],
-        obs["pos"][1],
+        (obs["pos"][0] - ARENA_CENTER) / ARENA_HALF,   # x relative to centre
+        (obs["pos"][1] - ARENA_CENTER) / ARENA_HALF,   # z relative to centre
         obs["yaw"] / 180.0,
         obs["life"] / 20.0,
     ], dtype=np.float32)
