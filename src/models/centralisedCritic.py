@@ -2,33 +2,30 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from src.utils.obsUtils import OBS_DIM, NUM_AGENTS, ACTION_ONEHOT_DIM
-
-STATE_DIM        = NUM_AGENTS * OBS_DIM                         # 225
-CRITIC_INPUT_DIM = STATE_DIM + NUM_AGENTS * ACTION_ONEHOT_DIM  # 225 + 24 = 249
+from src.utils.obsUtils import GLOBAL_STATE_DIM
 
 
-class CentralizedQNetwork(nn.Module):
+class CentralisedCritic(nn.Module):
     """
-    Per-agent centralized Q-network (paper eq. 9-10).
-    Input:  global state (225) + all agents' action one-hots (24) = 249
-    Output: scalar Q-value (B, 1)
+    MAPPO centralised critic.
+    Input:  global state (NUM_AGENTS * OBS_DIM = 453)
+    Output: scalar value estimate V(s)
+    One shared critic used for advantage computation across all predators.
     """
 
-    def __init__(self, inputDim: int = CRITIC_INPUT_DIM, hiddenDim: int = 64):
+    def __init__(self, hiddenDim: int = 256):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(inputDim, hiddenDim),
+            nn.Linear(GLOBAL_STATE_DIM, hiddenDim),
             nn.ReLU(),
             nn.Linear(hiddenDim, hiddenDim),
             nn.ReLU(),
             nn.Linear(hiddenDim, 1),
         )
 
-    def forward(self, state: torch.Tensor, actionsOnehot: torch.Tensor) -> torch.Tensor:
+    def forward(self, globalState: torch.Tensor) -> torch.Tensor:
         """
-        state:         (B, 225)
-        actionsOnehot: (B, 24)
-        returns:       (B, 1)
+        globalState: (B, GLOBAL_STATE_DIM=453)
+        returns:     (B, 1)
         """
-        return self.net(torch.cat([state, actionsOnehot], dim=-1))
+        return self.net(globalState)

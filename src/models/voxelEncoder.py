@@ -3,100 +3,86 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-GRID_SIZE    = 7
-ENTITY_FEATS = 5  # (x, z, yaw, life, isSameTeam)
+from src.utils.obsUtils import (
+    VOXEL_GRID_SIZE as VOXEL_GRID_DIM, NUM_BLOCK_TYPES, SELF_DIM, OPP_DIM, MAX_OPPONENTS, OBS_DIM
+)
 
-# entities are what the agent observes
-class EntityAttention(nn.Module):
-    """Attention pooling over variable-length nearby entity list."""
-    def __init__(self, entityDim: int, hiddenDim: int):
-        super().__init__()
-        self.entityEmbed = nn.Linear(ENTITY_FEATS, entityDim) # embedding of cnn features
-        self.queryProj   = nn.Linear(hiddenDim, entityDim)
-        self.scale       = entityDim ** -0.5
-
-    def forward(self, cnnFeats: torch.Tensor, entities: torch.Tensor, entityMask: torch.Tensor) -> torch.Tensor:
-        """
-        cnnFeats:   (B, hiddenDim)
-        entities:   (B, maxEntities, ENTITY_FEATS)
-        entityMask: (B, maxEntities) — 1 for real, 0 for padding
-        returns:    (B, entityDim)
-        """
-        # B: number of batches being processed
-        entityEmb = F.relu(self.entityEmbed(entities))          # (B, E, entityDim)
-        query     = self.queryProj(cnnFeats).unsqueeze(2)        # (B, entityDim, 1)
-        scores    = torch.bmm(entityEmb, query).squeeze(2)      # (B, E)
-        scores    = scores * self.scale
-        scores    = scores.masked_fill(entityMask == 0, -1e9)
-        attnW     = F.softmax(scores, dim=-1)                   # (B, E)
-        out       = torch.bmm(attnW.unsqueeze(1), entityEmb)    # (B, 1, entityDim)
-        return out.squeeze(1)                                   # (B, entityDim)
+CNN_DIM    = 64
+ENTITY_DIM = 32
+STATS_DIM  = 16
+OUTPUT_DIM = 128  # encoder output size used by actor, critic, and OM head
 
 
 class VoxelEncoder(nn.Module):
     """
-    Encodes agent observation into a fixed-size feature vector.
-    Input:  7x7 voxel grid + nearby entity list + agent stats
-    Output: feature vector of size outputDim
+    Encodes a flat observation vector (151-dim) into a fixed embedding.
+    Splits the flat obs back into: voxel grid (125), opponent features (22), self stats (4).
+    Voxel path:   embed block IDs -> 3D CNN -> pool -> project
+    Opponent path: linear embed -> attention pool
+    Stats path:   linear
+    All three fused -> OUTPUT_DIM = 128
     """
-    def __init__(self, numBlockTypes: int = 16, cnnDim: int = 64, entityDim: int = 32, outputDim: int = 128):
+
+    def __init__(self):
         super().__init__()
 
-        # Embed block type IDs before CNN
-        self.blockEmbed = nn.Embedding(numBlockTypes, 8)
+        self.blockEmbed = nn.Embedding(NUM_BLOCK_TYPES, 8)
 
-        # CNN over 7x7 spatial grid
         self.cnn = nn.Sequential(
-            nn.Conv2d(8, 32, kernel_size=3, padding=1),   # (B, 32, 7, 7)
+            nn.Conv3d(8, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, cnnDim, kernel_size=3, padding=1),  # (B, 64, 7, 7)
+            nn.Conv3d(32, CNN_DIM, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((3, 3)),                  # (B, 64, 3, 3)
+            nn.AdaptiveAvgPool3d((2, 2, 2)),  # (B, 64, 2, 2, 2)
         )
-        cnnFlatDim = cnnDim * 3 * 3  # 576
+        cnnFlatDim = CNN_DIM * 2 * 2 * 2  # 512
 
-        # Project CNN output to hiddenDim before attention query
-        self.cnnProj = nn.Linear(cnnFlatDim, cnnDim)
+        self.cnnProj = nn.Linear(cnnFlatDim, CNN_DIM)  # (B, 64)
 
-        # Attention over nearby entities (returns combined 
-        # embeddings of each entity weighted by attention score)
-        self.entityAttn = EntityAttention(entityDim, cnnDim)
+        # Attention over opponent feature vectors
+        self.oppEmbed  = nn.Linear(OPP_DIM, ENTITY_DIM)    # (B, nOpp, 32)
+        self.queryProj = nn.Linear(CNN_DIM, ENTITY_DIM)     # for attention query
+        self.scale     = ENTITY_DIM ** -0.5
 
-        # Agent stats encoder (pos x, pos z, yaw, life)
-        self.statsEncoder = nn.Linear(4, 16)
+        self.statsEncoder = nn.Linear(SELF_DIM, STATS_DIM)  # (B, 16)
 
-        # Final projection
-        fusedDim = cnnDim + entityDim + 16
+        fusedDim = CNN_DIM + ENTITY_DIM + STATS_DIM  # 112
         self.outputProj = nn.Sequential(
-            nn.Linear(fusedDim, outputDim),
+            nn.Linear(fusedDim, OUTPUT_DIM),
             nn.ReLU(),
         )
 
-    def forward(self, voxelGrid: torch.Tensor, entities: torch.Tensor,
-                entityMask: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
+    def forward(self, flatObs: torch.Tensor) -> torch.Tensor:
         """
-        voxelGrid:  (B, 49)     int block type IDs
-        entities:   (B, E, 5)   nearby entity features
-        entityMask: (B, E)      1=real entity, 0=padding
-        stats:      (B, 4)      [x, z, yaw, life]
-        returns:    (B, outputDim)
+        flatObs: (B, OBS_DIM=151)
+        returns: (B, OUTPUT_DIM=128)
         """
-        B = voxelGrid.size(0)
+        B = flatObs.size(0)
 
-        # Embed + reshape to spatial grid
-        gridEmb  = self.blockEmbed(voxelGrid.long())       # (B, 49, 8)
-        gridEmb  = gridEmb.view(B, GRID_SIZE, GRID_SIZE, 8).permute(0, 3, 1, 2)  # (B, 8, 7, 7)
+        # Split flat obs back into components
+        stats     = flatObs[:, :SELF_DIM]                           # (B, 4)
+        oppFeats  = flatObs[:, SELF_DIM: SELF_DIM + MAX_OPPONENTS * OPP_DIM]  # (B, 22)
+        voxelFlat = flatObs[:, SELF_DIM + MAX_OPPONENTS * OPP_DIM:]            # (B, 125)
 
-        # CNN
-        cnnOut   = self.cnn(gridEmb).reshape(B, -1)           # (B, 576)
-        cnnFeats = F.relu(self.cnnProj(cnnOut))            # (B, cnnDim)
+        # --- Voxel CNN path ---
+        # De-normalise back to int IDs for embedding
+        voxelIds = (voxelFlat * (NUM_BLOCK_TYPES - 1)).long().clamp(0, NUM_BLOCK_TYPES - 1)
+        gridEmb  = self.blockEmbed(voxelIds)  # (B, 125, 8)
+        gridEmb  = gridEmb.view(B, VOXEL_GRID_DIM, VOXEL_GRID_DIM, VOXEL_GRID_DIM, 8)
+        gridEmb  = gridEmb.permute(0, 4, 1, 2, 3)          # (B, 8, 5, 5, 5)
+        cnnOut   = self.cnn(gridEmb).reshape(B, -1)          # (B, 512)
+        cnnFeats = F.relu(self.cnnProj(cnnOut))              # (B, 64)
 
-        # Entity attention
-        entityFeats = self.entityAttn(cnnFeats, entities, entityMask)  # (B, entityDim)
+        # --- Opponent attention path ---
+        oppFeats  = oppFeats.view(B, MAX_OPPONENTS, OPP_DIM)  # (B, 2, 11)
+        oppEmb    = F.relu(self.oppEmbed(oppFeats))            # (B, 2, 32)
+        query     = self.queryProj(cnnFeats).unsqueeze(2)      # (B, 32, 1)
+        scores    = torch.bmm(oppEmb, query).squeeze(2) * self.scale  # (B, 2)
+        attnW     = F.softmax(scores, dim=-1)                  # (B, 2)
+        entityOut = torch.bmm(attnW.unsqueeze(1), oppEmb).squeeze(1)  # (B, 32)
 
-        # Stats
-        statsFeats = F.relu(self.statsEncoder(stats))      # (B, 16)
+        # --- Stats path ---
+        statsOut = F.relu(self.statsEncoder(stats))  # (B, 16)
 
-        # Fuse all
-        fused = torch.cat([cnnFeats, entityFeats, statsFeats], dim=-1)
-        return self.outputProj(fused)                      # (B, outputDim)
+        fused = torch.cat([cnnFeats, entityOut, statsOut], dim=-1)  # (B, 112)
+        return self.outputProj(fused)                                # (B, 128)
