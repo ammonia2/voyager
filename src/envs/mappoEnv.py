@@ -6,9 +6,11 @@ import random
 import numpy as np
 from pathlib import Path
 
-MOVE_CMDS   = ["move 1", "move -1", "move 0"]
-TURN_CMDS   = ["turn -1", "turn 1", "turn 0"]
-ATTACK_CMDS = ["attack 1", "attack 0"]
+MOVE_CMDS       = ["move 1", "move -1", "move 0"]
+# Predator turn is now CONTINUOUS: action[1] is a float in [-1, 1]
+# Sent as "turn <value>" directly — no discrete index.
+PREY_TURN_CMDS  = ["turn -1", "turn 1", "turn 0"]  # prey keeps discrete turn
+ATTACK_CMDS     = ["attack 1", "attack 0"]          # predators only
 
 NUM_AGENTS       = 3
 AGENT_NAMES      = ["Predator1", "Predator2", "Prey1"]
@@ -182,16 +184,49 @@ class MalmoEnv:
                 return False
         return self._allMissionsRunning()
 
-    def step(self, actions: list[tuple[int, int, int]]) -> tuple[list, list, list]:
-        for host, action in zip(self.agentHosts, actions):
-            moveIdx, turnIdx, attackIdx = action
-            host.sendCommand(MOVE_CMDS[moveIdx])
-            host.sendCommand(TURN_CMDS[turnIdx])
-            host.sendCommand(ATTACK_CMDS[attackIdx])
+    def step(self, actions: list[tuple]) -> tuple[list, list, list]:
+        """
+        actions[i] for predators: (move_idx: int, turn_cont: float, attack_idx: int)
+        actions[i] for prey:      (move_idx: int, turn_idx:  int,   0)
+        Prey never attacks.
+        """
+        for agentIdx, (host, action) in enumerate(zip(self.agentHosts, actions)):
+            moveVal, turnVal, attackVal = action
+            host.sendCommand(MOVE_CMDS[int(moveVal)])
+            if agentIdx in PREDATOR_INDICES:
+                # Continuous turn: clamp to [-1, 1] then send as float string
+                turnCont = float(np.clip(float(turnVal), -1.0, 1.0))
+                host.sendCommand(f"turn {turnCont:.4f}")
+                host.sendCommand(ATTACK_CMDS[int(attackVal)])
+            else:
+                # Prey: discrete turn, NO attack
+                host.sendCommand(PREY_TURN_CMDS[int(turnVal)])
+                host.sendCommand("attack 0")
 
         time.sleep(STEP_SLEEP)
 
         obsAll     = self._getObsAll()
+        
+        # Check for accidentally dead predators and respawn them instantly
+        for i in PREDATOR_INDICES:
+            if obsAll[i]["life"] <= 0:
+                x = random.uniform(ARENA_MIN, ARENA_MAX)
+                z = random.uniform(ARENA_MIN, ARENA_MAX)
+                yaw = random.uniform(0.0, 360.0)
+                
+                try:
+                    # tp and setHealth restore the agent immediately
+                    self.agentHosts[i].sendCommand(f"tp {x} {SPAWN_Y} {z}")
+                    self.agentHosts[i].sendCommand(f"setYaw {yaw}")
+                    self.agentHosts[i].sendCommand("setHealth 20")
+                except RuntimeError:
+                    pass
+                
+                # Optimistically update the obs so the network doesn't receive a 0 life observation
+                obsAll[i]["life"] = 20.0
+                obsAll[i]["pos"] = np.array([x, z], dtype=np.float32)
+                obsAll[i]["yaw"] = yaw
+
         rewardsAll = self._getRewardsAll(obsAll)
         donesAll   = self._getDonesAll()
         return obsAll, rewardsAll, donesAll
@@ -280,5 +315,11 @@ class MalmoEnv:
         return [done] * NUM_AGENTS
 
     @property
-    def numActions(self) -> tuple[int, int, int]:
-        return (len(MOVE_CMDS), len(TURN_CMDS), len(ATTACK_CMDS))
+    def predatorNumActions(self) -> tuple:
+        """(n_move: int, turn: 'continuous', n_attack: int)"""
+        return (len(MOVE_CMDS), "continuous", len(ATTACK_CMDS))
+
+    @property
+    def preyNumActions(self) -> tuple:
+        """(n_move: int, n_turn: int) — no attack."""
+        return (len(MOVE_CMDS), len(PREY_TURN_CMDS))

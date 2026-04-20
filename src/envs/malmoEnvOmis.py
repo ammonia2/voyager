@@ -213,6 +213,27 @@ class MalmoEnv:
 
         try:
             obsAll     = self._getObsAll()
+            
+            # Check for accidentally dead predators and respawn them instantly
+            for i in PREDATOR_INDICES:
+                if obsAll[i]["life"] <= 0:
+                    x = random.uniform(ARENA_MIN, ARENA_MAX)
+                    z = random.uniform(ARENA_MIN, ARENA_MAX)
+                    yaw = random.uniform(0.0, 360.0)
+                    
+                    try:
+                        self.agentHosts[i].sendCommand(f"tp {x} {SPAWN_Y} {z}")
+                        self.agentHosts[i].sendCommand(f"setYaw {yaw}")
+                        self.agentHosts[i].sendCommand("setHealth 20")
+                    except RuntimeError:
+                        pass
+                    
+                    # Optimistically update the obs
+                    obsAll[i]["life"] = 20.0
+                    obsAll[i]["x"] = float(x)
+                    obsAll[i]["z"] = float(z)
+                    obsAll[i]["yaw"] = yaw
+
             rewardsAll = self._getRewardsAll(obsAll)
             donesAll   = self._getDonesAll()
             self.episodeSteps += 1
