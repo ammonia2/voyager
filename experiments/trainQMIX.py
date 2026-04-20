@@ -12,7 +12,7 @@ from src.envs.malmoEnv import MalmoEnv, AGENT_NAMES
 import torch, torch.nn.functional as F
 import random, numpy as np
 
-MAX_STEPS              = 1_000_000
+NUM_EPISODES           = 5000
 EPISODE_LIMIT          = 500        # max timesteps per episode (Malmo has 60s = ~600 steps at 0.1s sleep)
 BATCH_SIZE             = 32
 HIDDEN_DIM             = 64
@@ -55,9 +55,7 @@ def saveTrainingState(qmix: QMIX, buffer: ReplayBuffer, checkpointPath: str, rep
 
 
 def maybeLoadTrainingState(qmix: QMIX, buffer: ReplayBuffer, checkpointPath: str,
-                           replayPath: str, shouldResume: bool) -> tuple[int, int, float]:
-    if not shouldResume:
-        return 0, 0, EPSILON_START
+                           replayPath: str) -> tuple[int, int, float]:
 
     checkpoint = Path(checkpointPath)
     if not checkpoint.exists():
@@ -87,11 +85,11 @@ def main():
     buffer = ReplayBuffer(BUFFER_SIZE)
 
     step, episodeCount, epsilon = maybeLoadTrainingState(
-        qmix, buffer, args.checkpoint, args.replay, args.resume
+        qmix, buffer, args.checkpoint, args.replay
     )
 
     try:
-        while step < MAX_STEPS:
+        while episodeCount < NUM_EPISODES:
             obs = env.reset()
             qmix.initHiddenStates()
             t = 0

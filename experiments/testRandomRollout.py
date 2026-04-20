@@ -15,7 +15,7 @@ import numpy as np
 from src.envs.malmoEnv import MalmoEnv, NUM_AGENTS
 from src.agents.randomAgent import RandomAgent
 from src.models.voxelEncoder import VoxelEncoder
-from src.models.OMHead import OMHead
+from src.models.omHead import OMHead
 
 MISSION_XML  = "configs/missionPredatorPrey.xml"
 MAX_STEPS    = 200

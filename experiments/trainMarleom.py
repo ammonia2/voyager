@@ -23,7 +23,7 @@ from src.utils.obsUtils import (
 MISSION_XML     = os.path.join(os.path.dirname(__file__), "..", "configs", "missionPredatorPrey.xml")
 
 # ---- Hyperparameters ----
-NUM_EPISODES    = 500
+NUM_EPISODES    = 5000
 MAX_STEPS       = 100          # shorter episodes = more resets = more spawn diversity
 BUFFER_CAPACITY = 100_000
 BATCH_SIZE      = 256
@@ -187,6 +187,11 @@ def main():
 
     PREY_WARMUP_EPISODES = 20
 
+    ckptPath = os.path.join(CKPT_DIR, "marleom_latest.pt")
+    if os.path.exists(ckptPath):
+        agent.load(ckptPath)
+        print(f"Auto-loaded checkpoint from {ckptPath}")
+
     totalSteps  = 0
     winHistory  = []   # per-episode win flags (1 tag, 0 otherwise)
 
@@ -313,7 +318,9 @@ def main():
 
         if episode % SAVE_EVERY == 0:
             path = os.path.join(CKPT_DIR, f"marleom_ep{episode}.pt")
+            latest_path = os.path.join(CKPT_DIR, "marleom_latest.pt")
             agent.save(path)
+            agent.save(latest_path)
             print(f"  └─ checkpoint saved → {path}")
 
     agent.save(os.path.join(CKPT_DIR, "marleom_final.pt"))
