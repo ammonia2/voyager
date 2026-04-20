@@ -8,7 +8,7 @@ from src.utils.obsUtils import GLOBAL_STATE_DIM
 class CentralisedCritic(nn.Module):
     """
     MAPPO centralised critic.
-    Input:  global state (NUM_AGENTS * OBS_DIM = 453)
+    Input:  global state (NUM_AGENTS * OBS_DIM = 441)
     Output: scalar value estimate V(s)
     One shared critic used for advantage computation across all predators.
     """
@@ -25,7 +25,7 @@ class CentralisedCritic(nn.Module):
 
     def forward(self, globalState: torch.Tensor) -> torch.Tensor:
         """
-        globalState: (B, GLOBAL_STATE_DIM=453)
+        globalState: (B, GLOBAL_STATE_DIM=441)
         returns:     (B, 1)
         """
         return self.net(globalState)
