@@ -21,7 +21,6 @@ import os
 import sys
 import time
 import json
-import math
 import random
 import tempfile
 import argparse
@@ -33,7 +32,7 @@ from torch.distributions import Categorical, Normal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.envs.mappoEnv import MalmoEnv, MOVE_CMDS, PREY_TURN_CMDS, ATTACK_CMDS
+from src.envs.mappoEnv import MalmoEnv
 from src.agents.mappo import MAPPO
 from src.utils.rolloutBuffer import RolloutBuffer
 from src.utils.logs import MARLLogger
@@ -48,7 +47,7 @@ CKPT_DIR    = os.path.join(os.path.dirname(__file__), "..", "checkpoints")
 # Hyperparameters
 ROLLOUT_STEPS  = 512
 PPO_EPOCHS     = 4
-MINI_BATCH     = 128
+MINI_BATCH     = 64
 GAMMA          = 0.99
 LAMDA          = 0.95
 CLIP_EPS       = 0.15
@@ -374,7 +373,7 @@ def workerFn(rank: int, worldSize: int, args: argparse.Namespace):
                     step            = totalSteps,
                     update          = updateNum,
                     policyEntropy   = losses["preyEntropy"],
-                    valueLossSanity = losses["preyValueMse"],
+                    advantageMseSanity = losses["preyAdvMse"],
                     sec_per_up      = elapsed,
                 )
 
@@ -395,12 +394,16 @@ def workerFn(rank: int, worldSize: int, args: argparse.Namespace):
             print(f"  -> checkpoint saved {path}")
 
         if updateNum % WORLD_RESET_EVERY_UPDATES == 0:
+            if worldSize > 1:
+                dist.barrier()
             obsAll = env.reset(forceRestart=True)
             lastActionsAll = _neutralActionsAll()
             epPredReward = 0.0
             epPreyReward = 0.0
             epPreySteps = 0
             epPreyEntropySum = 0.0
+            if worldSize > 1:
+                dist.barrier()
             if rank == 0:
                 print(f"[rank 0] Forced world restart at update {updateNum}")
 

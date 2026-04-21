@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 
-from src.utils.obsUtils import NUM_AGENTS, OBS_DIM, GLOBAL_STATE_DIM, PREDATOR_INDICES, PREY_INDICES
+from src.utils.obsUtils import NUM_AGENTS, OBS_DIM, GLOBAL_STATE_DIM, PREDATOR_INDICES
 
 
 class RolloutBuffer:

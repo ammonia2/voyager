@@ -86,7 +86,7 @@ class MAPPO:
         lr: float           = 3e-4,
         gamma: float        = 0.99,
         lamda: float        = 0.95,
-        clipEps: float      = 0.2,
+        clipEps: float      = 0.15,
         entropyCoeff: float = 0.01,
         valCoeff: float     = 0.5,
         omCoeff: float      = 0.5,
@@ -218,7 +218,7 @@ class MAPPO:
         preyLastValue   = rollout["preyLastValue"]
         preyRewardsRaw  = list(rewards[:, preyIdx])
         preyAdvRaw      = np.array(_computeGAE(preyRewardsRaw, list(preyValues), list(dones), preyLastValue, self.gamma, self.lamda), dtype=np.float32)
-        preyValueMse    = float(np.mean(np.square(preyAdvRaw)))
+        preyAdvMse      = float(np.mean(np.square(preyAdvRaw)))
         preyAdvArr      = preyAdvRaw
         preyAdvArr      = (preyAdvArr - preyAdvArr.mean()) / (preyAdvArr.std() + 1e-8)
 
@@ -326,7 +326,7 @@ class MAPPO:
             "entropy":    float(np.mean(entropies)),
             "omLoss":     float(np.mean(omLosses)),
             "preyEntropy": float(np.mean(preyEntropies)) if preyEntropies else 0.0,
-            "preyValueMse": preyValueMse,
+            "preyAdvMse": preyAdvMse,
         }
 
     # ------------------------------------------------------------------
