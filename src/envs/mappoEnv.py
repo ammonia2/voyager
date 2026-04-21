@@ -62,6 +62,8 @@ def _randomSpawnPoints() -> list[tuple[float, float, float, float]]:
 
 
 class MalmoEnv:
+    EPISODE_STEP_LIMIT = 500
+
     def __init__(self, missionXmlPath: str, portOffset: int = 0):
         self.missionXml  = Path(missionXmlPath).read_text()
         self.portOffset  = portOffset
@@ -314,7 +316,8 @@ class MalmoEnv:
         missionDead = not self._allMissionsRunning()
         if missionDead:
             self.missionStarted = False
-        done = missionDead or self.preyWasTagged
+        timeLimitReached = self.episodeSteps >= self.EPISODE_STEP_LIMIT
+        done = missionDead or self.preyWasTagged or timeLimitReached
         return [done] * NUM_AGENTS
 
     @property
