@@ -1,6 +1,8 @@
 # Launch 6 Minecraft clients for MARL training
 # Each instance is configured with reduced memory to fit on a single machine.
 
+# run : powershell -NoProfile -ExecutionPolicy Bypass -File .\run\launch_6_clients.ps1
+
 $MALMO_PATH = "C:\Malmo\Minecraft"
 $env:MALMO_XSD_PATH = "C:\Malmo\Schemas"
 

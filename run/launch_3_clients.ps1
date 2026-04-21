@@ -1,6 +1,8 @@
 # Launch 3 Minecraft clients for a single-worker MARL run
 # Each instance is configured with reduced memory to fit on a single machine.
 
+# run : powershell -NoProfile -ExecutionPolicy Bypass -File .\run\launch_3_clients.ps1
+
 $MALMO_PATH = "C:\Malmo\Minecraft"
 $env:MALMO_XSD_PATH = "C:\Malmo\Schemas"
 
@@ -20,10 +22,8 @@ for ($i = 0; $i -lt 3; $i++) {
 
     # Stagger launches to avoid CPU spikes during startup
     if ($i -lt 2) {
-        Start-Sleep -Seconds 5
+        Start-Sleep -Seconds 10
     }
 }
 
 Write-Host "Done. Wait for all instances to reach the Main Menu before starting training." -ForegroundColor Green
-
-# run : powershell -NoProfile -ExecutionPolicy Bypass -File .\run\launch_3_clients.ps1

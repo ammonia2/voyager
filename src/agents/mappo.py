@@ -217,7 +217,9 @@ class MAPPO:
         preyValues      = rollout["preyValues"]
         preyLastValue   = rollout["preyLastValue"]
         preyRewardsRaw  = list(rewards[:, preyIdx])
-        preyAdvArr      = np.array(_computeGAE(preyRewardsRaw, list(preyValues), list(dones), preyLastValue, self.gamma, self.lamda), dtype=np.float32)
+        preyAdvRaw      = np.array(_computeGAE(preyRewardsRaw, list(preyValues), list(dones), preyLastValue, self.gamma, self.lamda), dtype=np.float32)
+        preyValueMse    = float(np.mean(np.square(preyAdvRaw)))
+        preyAdvArr      = preyAdvRaw
         preyAdvArr      = (preyAdvArr - preyAdvArr.mean()) / (preyAdvArr.std() + 1e-8)
 
         # ---------------- Tensors ----------------
@@ -235,7 +237,7 @@ class MAPPO:
         preyMoveT = actsT[:, preyIdx, 0].long()
         preyTurnT = actsT[:, preyIdx, 1].long()
 
-        policyLosses, valueLosses, entropies, omLosses = [], [], [], []
+        policyLosses, valueLosses, entropies, omLosses, preyEntropies = [], [], [], [], []
         indices = np.arange(T)
 
         for _ in range(self.ppoEpochs):
@@ -316,12 +318,15 @@ class MAPPO:
                 valueLosses.append(valueLoss.item())
                 entropies.append((totalEntropy    / self.nPredators).item())
                 omLosses.append((totalOm          / self.nPredators).item())
+                preyEntropies.append(preyEntropy.item())
 
         return {
             "policyLoss": float(np.mean(policyLosses)),
             "valueLoss":  float(np.mean(valueLosses)),
             "entropy":    float(np.mean(entropies)),
             "omLoss":     float(np.mean(omLosses)),
+            "preyEntropy": float(np.mean(preyEntropies)) if preyEntropies else 0.0,
+            "preyValueMse": preyValueMse,
         }
 
     # ------------------------------------------------------------------

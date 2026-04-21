@@ -29,6 +29,7 @@
         <!-- Clear interior -->
         <DrawCuboid x1="1" y1="4" z1="1" x2="19" y2="6" z2="19" type="air"/>
       </DrawingDecorator>
+      <ServerQuitWhenAnyAgentFinishes/>
       <!-- <ServerQuitFromTimeUp timeLimitMs="86400000" description="long-running training session"/> -->
     </ServerHandlers>
   </ServerSection>
@@ -52,6 +53,7 @@
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
       <AbsoluteMovementCommands/>
+      <MissionQuitCommands quitDescription="restart"/>
       <!-- <RewardForDamagingEntity>
         <Mob type="Player" reward="5"/>
       </RewardForDamagingEntity> changing reward dynamics-->
@@ -79,6 +81,7 @@
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
       <AbsoluteMovementCommands/>
+      <MissionQuitCommands quitDescription="restart"/>
       <!-- <RewardForDamagingEntity>
         <Mob type="Player" reward="5"/>
       </RewardForDamagingEntity> -->
@@ -106,6 +109,7 @@
       <ObservationFromFullStats/>
       <ContinuousMovementCommands turnSpeedDegs="180"/>
       <AbsoluteMovementCommands/>
+      <MissionQuitCommands quitDescription="restart"/>
       <!-- <RewardForTimeTaken initialReward="0" delta="0.1" density="PER_TICK"/> -->
       <!-- <AgentQuitFromReachingCommandQuota total="10000"/> -->
     </AgentHandlers>

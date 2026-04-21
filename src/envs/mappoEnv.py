@@ -79,14 +79,14 @@ class MalmoEnv:
             pool.add(MalmoPython.ClientInfo("127.0.0.1", BASE_PORT + self.portOffset + i))
         return pool
 
-    def reset(self) -> list[dict]:
+    def reset(self, forceRestart: bool = False) -> list[dict]:
         self._spawnPoints  = _randomSpawnPoints()
         self.preyWasTagged = False
         self.episodeSteps  = 0
 
         running = self.missionStarted and self._allMissionsRunning()
-        if not running:
-            self._restartMission()
+        if forceRestart or not running:
+            self._restartMission(forceRestart=forceRestart)
         else:
             resetOk = self._softResetEpisode(maxTries=SOFT_RESET_MAX_TRIES)
             if not resetOk:
@@ -103,8 +103,8 @@ class MalmoEnv:
         self.prevHealth = [obs["life"] for obs in obsAll]
         return obsAll
 
-    def _restartMission(self):
-        self._ensureMissionStopped()
+    def _restartMission(self, forceRestart: bool = False):
+        self._ensureMissionStopped(timeout=10.0 if forceRestart else RESET_WAIT_TIMEOUT, allowTimeout=forceRestart)
         time.sleep(CLIENT_POOL_COOLDOWN)
         self._startMission()
 
@@ -153,7 +153,7 @@ class MalmoEnv:
     def _allMissionsRunning(self) -> bool:
         return all(host.getWorldState().is_mission_running for host in self.agentHosts)
 
-    def _ensureMissionStopped(self, timeout: float = RESET_WAIT_TIMEOUT):
+    def _ensureMissionStopped(self, timeout: float = RESET_WAIT_TIMEOUT, allowTimeout: bool = False):
         deadline = time.time() + timeout
         while time.time() < deadline:
             runningHosts = [
@@ -168,7 +168,10 @@ class MalmoEnv:
                     host.sendCommand("quit")
                 except RuntimeError:
                     pass
-            time.sleep(1.0)
+            time.sleep(0.5)
+        if allowTimeout:
+            self.missionStarted = False
+            return
         raise RuntimeError("Timed out waiting for previous mission to stop.")
 
     def _isResetStateHealthy(self, obsAll: list[dict]) -> bool:
@@ -205,7 +208,7 @@ class MalmoEnv:
 
         time.sleep(STEP_SLEEP)
 
-        obsAll     = self._getObsAll()
+        obsAll = self._getObsAll()
         
         # Check for accidentally dead predators and respawn them instantly
         for i in PREDATOR_INDICES:

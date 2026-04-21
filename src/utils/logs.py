@@ -6,9 +6,11 @@ Metrics sourced from all three base papers:
   - OEOM     (Jing et al., AAAI 2025)
   - MARLeOM  (Li et al., ECAI 2024)
 
-All output is printed to console only.
+Output is printed to console; optional JSONL file logging is supported.
 """
 
+import json
+import os
 import time
 from collections import defaultdict
 
@@ -114,10 +116,14 @@ class MARLLogger:
         )
     """
 
-    def __init__(self, algo_name="MARL", log_interval=100, seed=0):
+    def __init__(self, algo_name="MARL", log_interval=100, seed=0, log_file=None):
         self.algo_name    = algo_name
         self.log_interval = log_interval
         self.seed         = seed
+        self.log_file     = log_file
+
+        if self.log_file is not None:
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
 
         # Buffers
         self._train_buf   = MetricBuffer()   # rolling training window
@@ -134,6 +140,19 @@ class MARLLogger:
         print(f"  Seed      : {self.seed}")
         print(f"  Log every : {self.log_interval} episodes")
         _divider("═")
+
+    def _write_record(self, record_type, **payload):
+        """Append one JSONL record if file logging is enabled."""
+        if self.log_file is None:
+            return
+        record = {
+            "timestamp": _timestamp(),
+            "algorithm": self.algo_name,
+            "record_type": record_type,
+        }
+        record.update(payload)
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
 
     # ── Training episode logging ──────────────────────────────
 
@@ -159,6 +178,7 @@ class MARLLogger:
 
         self._train_buf.record(**payload)
         self._total_episodes += 1
+        self._write_record("episode", episode=int(episode), **payload)
 
         if episode % self.log_interval == 0:
             self.print_episode_summary(episode)
@@ -175,6 +195,7 @@ class MARLLogger:
         """
         parts = [f"{k}={v:.4f}" for k, v in losses.items()]
         print(f"  [{_timestamp()}]  Step {step:>8d}  |  " + "  ".join(parts))
+        self._write_record("step", step=int(step), **losses)
 
     # ── Evaluation logging ────────────────────────────────────
 
@@ -205,6 +226,8 @@ class MARLLogger:
             self._eval_seen.record(**payload)
         else:
             self._eval_unseen.record(**payload)
+
+        self._write_record("eval", episode=int(episode), opponent_type=opponent_type, **payload)
 
     def print_eval_summary(self, episode, n_seen_episodes=None, n_unseen_episodes=None):
         """

@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import json
 import math
 import random
 import tempfile
@@ -57,6 +58,7 @@ OM_COEFF       = 0.5
 LR             = 3e-4
 MAX_UPDATES    = 5000
 SAVE_EVERY     = 10
+WORLD_RESET_EVERY_UPDATES = 20
 DEVICE         = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Neutral (do-nothing) actions — differ by agent type
@@ -87,6 +89,29 @@ def _broadcastParams(params, src: int = 0):
         dist.broadcast(p.data, src=src)
 
 
+def _restoreEpisodeCountersFromJsonl(logPath: str) -> tuple[int, int]:
+    """Restore (episodes, wins) from existing JSONL episode records."""
+    if not os.path.exists(logPath):
+        return 0, 0
+
+    episodes = 0
+    wins = 0
+    with open(logPath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("record_type") != "episode":
+                continue
+            episodes += 1
+            wins += int(rec.get("win", 0))
+    return episodes, wins
+
+
 # ------------------------------------------------------------------
 # Rollout collection
 # ------------------------------------------------------------------
@@ -98,19 +123,25 @@ def collectRollout(
     obsAll: list[dict],
     lastActionsAll: list[tuple],
     epPredReward: float,
+    epPreyReward: float,
+    epPreySteps: int,
+    epPreyEntropySum: float,
     preyRewardEma: float,
-) -> tuple[list[dict], list[tuple], float, float, float, list[tuple], float]:
+) -> tuple[list[dict], list[tuple], float, float, float, float, int, float, list[tuple], list[dict], float]:
     """
     Fills buffer with ROLLOUT_STEPS transitions.
     Returns:
       obsAll, lastActionsAll, lastValue, preyLastValue, 
-      ongoing_epPredReward, finished_eps, updated preyRewardEma
+            ongoing_epPredReward, ongoing_epPreyReward, ongoing_epPreySteps,
+            ongoing_epPreyEntropySum, finished_pred_eps, finished_prey_eps,
+            updated preyRewardEma
     """
     buffer.reset()
     flatObs = flattenObsAll(obsAll, lastActionsAll)
 
-    finished_eps = []
-    done         = False
+    finished_pred_eps = []
+    finished_prey_eps = []
+    done              = False
 
     for _ in range(buffer.T):
         globalState = buildGlobalState(flatObs)
@@ -150,6 +181,9 @@ def collectRollout(
                 Categorical(mpP).log_prob(pm)
                 + Categorical(tpP).log_prob(pt)
             ).item()
+            preyEntropy = (
+                Categorical(mpP).entropy() + Categorical(tpP).entropy()
+            ).item()
 
         # Prey value = EMA of prey reward (running mean baseline for REINFORCE)
         preyValue = preyRewardEma
@@ -170,14 +204,30 @@ def collectRollout(
         preyRewardEma = 0.99 * preyRewardEma + 0.01 * rewardsAll[preyIdx]
 
         epPredReward   += sum(rewardsAll[i] for i in PREDATOR_INDICES) / len(PREDATOR_INDICES)
+        epPreyReward   += rewardsAll[preyIdx]
+        epPreySteps    += 1
+        epPreyEntropySum += preyEntropy
         lastActionsAll  = list(actions)
         flatObs         = nextFlatObs
         obsAll          = nextObsAll
 
         if done:
             winFlag = 1.0 if env.preyWasTagged else 0.0
-            finished_eps.append((epPredReward, winFlag))
+            finished_pred_eps.append((epPredReward, winFlag))
+
+            preyEscaped = 0.0 if env.preyWasTagged else 1.0
+            finished_prey_eps.append({
+                "episode_return": epPreyReward,
+                "win": preyEscaped,
+                "escape_rate": preyEscaped,
+                "survival_time": epPreySteps,
+                "policy_entropy": epPreyEntropySum / max(epPreySteps, 1),
+            })
+
             epPredReward = 0.0
+            epPreyReward = 0.0
+            epPreySteps = 0
+            epPreyEntropySum = 0.0
             obsAll  = env.reset()
             flatObs = flattenObsAll(obsAll, _neutralActionsAll())
 
@@ -185,7 +235,19 @@ def collectRollout(
     lastValue     = agent.getValue(buildGlobalState(flatObs)) if not done else 0.0
     preyLastValue = preyRewardEma if not done else 0.0
 
-    return obsAll, lastActionsAll, lastValue, preyLastValue, epPredReward, finished_eps, preyRewardEma
+    return (
+        obsAll,
+        lastActionsAll,
+        lastValue,
+        preyLastValue,
+        epPredReward,
+        epPreyReward,
+        epPreySteps,
+        epPreyEntropySum,
+        finished_pred_eps,
+        finished_prey_eps,
+        preyRewardEma,
+    )
 
 
 # ------------------------------------------------------------------
@@ -233,22 +295,38 @@ def workerFn(rank: int, worldSize: int, args: argparse.Namespace):
 
     lastActionsAll = _neutralActionsAll()
     obsAll         = env.reset()
-    epPredReward   = 0.0
-    preyRewardEma  = 0.0
-    totalSteps     = 0
+    epPredReward    = 0.0
+    epPreyReward    = 0.0
+    epPreySteps     = 0
+    epPreyEntropySum = 0.0
+    preyRewardEma   = 0.0
+    totalSteps      = 0
 
-    logger = None
+    predatorLogger = None
+    preyLogger = None
     if rank == 0:
-        log_file = os.path.join(CKPT_DIR, "mappo_training.log")
-        logger = MARLLogger(algo_name="MAPPO", log_interval=10, seed=42, log_file=log_file)
+        pred_log_file = os.path.join(CKPT_DIR, "mappo_predator_metrics.jsonl")
+        prey_log_file = os.path.join(CKPT_DIR, "mappo_prey_metrics.jsonl")
+        predatorLogger = MARLLogger(algo_name="MAPPO_predator", log_interval=10, seed=42, log_file=pred_log_file)
+        preyLogger = MARLLogger(algo_name="MAPPO_prey", log_interval=10, seed=42, log_file=prey_log_file)
+
+        pred_eps, pred_wins = _restoreEpisodeCountersFromJsonl(pred_log_file)
+        prey_eps, prey_wins = _restoreEpisodeCountersFromJsonl(prey_log_file)
+        predatorLogger._total_episodes = pred_eps
+        predatorLogger._total_wins = pred_wins
+        preyLogger._total_episodes = prey_eps
+        preyLogger._total_wins = prey_wins
+        if pred_eps > 0 or prey_eps > 0:
+            print(f"[rank {rank}] Appending logs: predator episodes={pred_eps}, prey episodes={prey_eps}")
 
     for updateNum in range(1, MAX_UPDATES + 1):
         t0 = time.time()
 
         (obsAll, lastActionsAll, lastValue, preyLastValue,
-         epPredReward, finished_eps, preyRewardEma) = collectRollout(
+         epPredReward, epPreyReward, epPreySteps, epPreyEntropySum,
+         finished_pred_eps, finished_prey_eps, preyRewardEma) = collectRollout(
             env, agent, buffer, obsAll, lastActionsAll,
-            epPredReward, preyRewardEma,
+            epPredReward, epPreyReward, epPreySteps, epPreyEntropySum, preyRewardEma,
         )
 
         totalSteps += ROLLOUT_STEPS * worldSize
@@ -262,20 +340,28 @@ def workerFn(rank: int, worldSize: int, args: argparse.Namespace):
 
         losses = agent.update(rollout, reduceFn)
 
-        if rank == 0 and logger is not None:
-            for rw, wf in finished_eps:
-                logger._total_episodes += 1  # Track local episodes manually to trigger summary on local 0
-                logger.log_episode(
-                    episode        = logger._total_episodes,
+        if rank == 0 and predatorLogger is not None and preyLogger is not None:
+            for rw, wf in finished_pred_eps:
+                predatorLogger.log_episode(
+                    episode        = predatorLogger._total_episodes + 1,
                     episode_return = rw,
-                    win            = wf,
-                    opponent_type  = "seen"
+                    win            = wf
+                )
+
+            for metrics in finished_prey_eps:
+                preyLogger.log_episode(
+                    episode        = preyLogger._total_episodes + 1,
+                    episode_return = metrics["episode_return"],
+                    win            = metrics["win"],
+                    escape_rate    = metrics["escape_rate"],
+                    survival_time  = metrics["survival_time"],
+                    policy_entropy = metrics["policy_entropy"],
                 )
 
             # Log loss information every 10 updates
             if updateNum % 10 == 0:
                 elapsed = time.time() - t0
-                logger.log_step(
+                predatorLogger.log_step(
                     step        = totalSteps,
                     update      = updateNum,
                     policyLoss  = losses["policyLoss"],
@@ -284,9 +370,16 @@ def workerFn(rank: int, worldSize: int, args: argparse.Namespace):
                     omLoss      = losses["omLoss"],
                     sec_per_up  = elapsed
                 )
+                preyLogger.log_step(
+                    step            = totalSteps,
+                    update          = updateNum,
+                    policyEntropy   = losses["preyEntropy"],
+                    valueLossSanity = losses["preyValueMse"],
+                    sec_per_up      = elapsed,
+                )
 
         # Synchronize episode count across workers and terminate if reached
-        epT = torch.tensor([logger._total_episodes if rank == 0 and logger else 0], dtype=torch.long, device=DEVICE)
+        epT = torch.tensor([predatorLogger._total_episodes if rank == 0 and predatorLogger else 0], dtype=torch.long, device=DEVICE)
         if worldSize > 1:
             dist.broadcast(epT, src=0)
         
@@ -301,8 +394,22 @@ def workerFn(rank: int, worldSize: int, args: argparse.Namespace):
             agent.save(os.path.join(CKPT_DIR, "mappo_latest.pt"))
             print(f"  -> checkpoint saved {path}")
 
+        if updateNum % WORLD_RESET_EVERY_UPDATES == 0:
+            obsAll = env.reset(forceRestart=True)
+            lastActionsAll = _neutralActionsAll()
+            epPredReward = 0.0
+            epPreyReward = 0.0
+            epPreySteps = 0
+            epPreyEntropySum = 0.0
+            if rank == 0:
+                print(f"[rank 0] Forced world restart at update {updateNum}")
+
     if rank == 0:
         agent.save(os.path.join(CKPT_DIR, "mappo_final.pt"))
+        if predatorLogger is not None:
+            predatorLogger.print_final_summary()
+        if preyLogger is not None:
+            preyLogger.print_final_summary()
         print("Training complete.")
 
     if worldSize > 1:
