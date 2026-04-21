@@ -4,11 +4,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from src.models.actorNetwork import ActorNetwork
-from src.models.centralisedCritic import CentralizedQNetwork
-from src.models.opponentModel import OpponentModel
+from src.models.marleom.actorNetwork import ActorNetwork
+from src.models.marleom.centralisedCritic import CentralisedCritic
+from src.models.marleom.opponentModel import OpponentModel
 from src.utils.obsUtils import (
-    OBS_DIM, NUM_AGENTS, N_MOVE, N_TURN, N_ATTACK, ACTION_ONEHOT_DIM,
+    OBS_DIM, NUM_AGENTS, N_MOVE, N_TURN, N_ATTACK, ACTION_OH_DIM,
     PREDATOR_INDICES, PREY_INDICES,
 )
 
@@ -78,13 +78,13 @@ class MARLeOM:
 
         # critics[i][j]: j in {0,1} for double-Q
         self.critics = [
-            [CentralizedQNetwork().to(self.device),
-             CentralizedQNetwork().to(self.device)]
+            [CentralisedCritic().to(self.device),
+             CentralisedCritic().to(self.device)]
             for _ in range(self.nPredators)
         ]
         self.targetCritics = [
-            [CentralizedQNetwork().to(self.device),
-             CentralizedQNetwork().to(self.device)]
+            [CentralisedCritic().to(self.device),
+             CentralisedCritic().to(self.device)]
             for _ in range(self.nPredators)
         ]
         for i in range(self.nPredators):
@@ -278,57 +278,65 @@ class MARLeOM:
 
     def _actionsToOnehot(self, actionsAll: torch.Tensor) -> torch.Tensor:
         """
-        actionsAll: (B, NUM_AGENTS=3, 3) int64
-        Returns:    (B, 24)  - 3 agents * 8
+        actionsAll: (B, NUM_AGENTS=3, 3) float
+        Returns:    (B, 20)
+          predator: move_oh(3) + turn_cont(1) + attack_oh(2) = 6 each
+          prey:     move_oh(3) + turn_oh(3) + attack_oh(2)   = 8
         """
         parts = []
-        for i in range(NUM_AGENTS):
-            parts.append(torch.cat([
-                F.one_hot(actionsAll[:, i, 0], N_MOVE).float(),
-                F.one_hot(actionsAll[:, i, 1], N_TURN).float(),
-                F.one_hot(actionsAll[:, i, 2], N_ATTACK).float(),
-            ], dim=-1))
-        return torch.cat(parts, dim=-1)  # (B, 24)
+        for i in PREDATOR_INDICES:
+            move = F.one_hot(actionsAll[:, i, 0].long(), N_MOVE).float()
+            turn = actionsAll[:, i, 1].unsqueeze(-1).float().clamp(-1.0, 1.0)
+            attack = F.one_hot(actionsAll[:, i, 2].long(), N_ATTACK).float()
+            parts.append(torch.cat([move, turn, attack], dim=-1))
+
+        preyIdx = PREY_INDICES[0]
+        parts.append(torch.cat([
+            F.one_hot(actionsAll[:, preyIdx, 0].long(), N_MOVE).float(),
+            F.one_hot(actionsAll[:, preyIdx, 1].long(), N_TURN).float(),
+            F.one_hot(actionsAll[:, preyIdx, 2].long(), N_ATTACK).float(),
+        ], dim=-1))
+        return torch.cat(parts, dim=-1)  # (B, 20)
 
     def _agentActionOnehot(
         self, actionsAll: torch.Tensor, localIdx: int,
-        mIdx: torch.Tensor, tIdx: torch.Tensor, aIdx: torch.Tensor,
+        mIdx: torch.Tensor, tCont: torch.Tensor, aIdx: torch.Tensor,
     ) -> torch.Tensor:
         """
         Full action one-hot with predator[localIdx] replaced by new sampled actions.
-        Returns (B, 24).
+        Returns (B, 20).
         """
         parts = []
         for k, agentIdx in enumerate(PREDATOR_INDICES):
             if k == localIdx:
                 parts.append(torch.cat([
                     F.one_hot(mIdx, N_MOVE).float(),
-                    F.one_hot(tIdx, N_TURN).float(),
+                    tCont.float().view(-1, 1).clamp(-1.0, 1.0),
                     F.one_hot(aIdx, N_ATTACK).float(),
                 ], dim=-1))
             else:
                 parts.append(torch.cat([
-                    F.one_hot(actionsAll[:, agentIdx, 0], N_MOVE).float(),
-                    F.one_hot(actionsAll[:, agentIdx, 1], N_TURN).float(),
-                    F.one_hot(actionsAll[:, agentIdx, 2], N_ATTACK).float(),
+                    F.one_hot(actionsAll[:, agentIdx, 0].long(), N_MOVE).float(),
+                    actionsAll[:, agentIdx, 1].unsqueeze(-1).float().clamp(-1.0, 1.0),
+                    F.one_hot(actionsAll[:, agentIdx, 2].long(), N_ATTACK).float(),
                 ], dim=-1))
         preyIdx = PREY_INDICES[0]
         parts.append(torch.cat([
-            F.one_hot(actionsAll[:, preyIdx, 0], N_MOVE).float(),
-            F.one_hot(actionsAll[:, preyIdx, 1], N_TURN).float(),
-            F.one_hot(actionsAll[:, preyIdx, 2], N_ATTACK).float(),
+            F.one_hot(actionsAll[:, preyIdx, 0].long(), N_MOVE).float(),
+            F.one_hot(actionsAll[:, preyIdx, 1].long(), N_TURN).float(),
+            F.one_hot(actionsAll[:, preyIdx, 2].long(), N_ATTACK).float(),
         ], dim=-1))
-        return torch.cat(parts, dim=-1)  # (B, 24)
+        return torch.cat(parts, dim=-1)  # (B, 20)
 
     # ------------------------------------------------------------------
     @torch.no_grad()
     def selectActions(self, flatObsAll: np.ndarray, explore: bool = True) -> list[tuple]:
         """
         flatObsAll: (NUM_AGENTS=3, OBS_DIM=75) numpy
-        Returns list of (moveIdx, turnIdx, attackIdx) for all 3 agents.
+        Returns list of (moveIdx, turnVal, attackIdx) for all 3 agents.
         Prey slot [2] is filled with neutral (2,2,1) - caller overrides with prey policy.
         """
-        actions = [(2, 2, 1)] * NUM_AGENTS
+        actions = [(2, 0.0, 1)] * NUM_AGENTS
         obsT = torch.FloatTensor(flatObsAll).to(self.device)  # (3, 75)
         preyObs = obsT[PREY_INDICES[0]].unsqueeze(0)          # (1, 75)
 
@@ -337,12 +345,14 @@ class MARLeOM:
             actorIn  = self._buildActorInput(agentObs, preyObs)  # (1, 83)
 
             if explore:
-                mIdx, tIdx, aIdx, _, _ = self.actors[localIdx].sampleAction(actorIn)
+                mIdx, tCont, aIdx, _, _ = self.actors[localIdx].sampleAction(actorIn)
             else:
-                moveP, turnP, attackP = self.actors[localIdx](actorIn)
-                mIdx = moveP.argmax(-1); tIdx = turnP.argmax(-1); aIdx = attackP.argmax(-1)
+                moveP, turnMean, _, attackP = self.actors[localIdx](actorIn)
+                mIdx = moveP.argmax(-1)
+                tCont = turnMean.squeeze(-1)
+                aIdx = attackP.argmax(-1)
 
-            actions[agentIdx] = (mIdx.item(), tIdx.item(), aIdx.item())
+            actions[agentIdx] = (mIdx.item(), float(tCont.item()), aIdx.item())
 
         return actions
 
@@ -365,11 +375,12 @@ class MARLeOM:
         for localIdx, agentIdx in enumerate(PREDATOR_INDICES):
             agentObs = obsT[agentIdx].unsqueeze(0)
             actorIn = self._buildActorInput(agentObs, preyObs)
-            moveP, turnP, attackP = self.actors[localIdx](actorIn)
+            moveP, turnMean, turnStd, attackP = self.actors[localIdx](actorIn)
 
             debug_info["actors"].append({
                 "moveP": moveP[0].cpu().numpy(),
-                "turnP": turnP[0].cpu().numpy(),
+                "turnMean": turnMean[0].cpu().numpy(),
+                "turnStd": turnStd[0].cpu().numpy(),
                 "attackP": attackP[0].cpu().numpy(),
             })
 
@@ -388,7 +399,7 @@ class MARLeOM:
         obsNp, actionsNp, rewardsNp, nextObsNp, donesNp = batch
 
         obsAll     = torch.FloatTensor(obsNp).to(self.device)
-        actionsAll = torch.LongTensor(actionsNp).to(self.device)
+        actionsAll = torch.FloatTensor(actionsNp).to(self.device)
         rewardsAll = torch.FloatTensor(rewardsNp).to(self.device)
         nextObsAll = torch.FloatTensor(nextObsNp).to(self.device)
         donesAll   = torch.FloatTensor(donesNp).to(self.device)
@@ -408,9 +419,9 @@ class MARLeOM:
         # ---- Opponent model update ----
         om0Loss = self.oppModelL0.computeLoss(
             preyObsCur,
-            actionsAll[:, preyIdx, 0],
-            actionsAll[:, preyIdx, 1],
-            actionsAll[:, preyIdx, 2],
+            actionsAll[:, preyIdx, 0].long(),
+            actionsAll[:, preyIdx, 1].long(),
+            actionsAll[:, preyIdx, 2].long(),
         )
         brMove, brTurn, brAttack = self._inferBestResponseActions(globalState, actionsAll)
         om1Loss = self.oppModelL1.computeLoss(
@@ -427,9 +438,9 @@ class MARLeOM:
         # Update Bayesian mixing weights using actual observed prey actions
         self._updateBayesWeights(
             preyObsCur,
-            actionsAll[:, preyIdx, 0],
-            actionsAll[:, preyIdx, 1],
-            actionsAll[:, preyIdx, 2],
+            actionsAll[:, preyIdx, 0].long(),
+            actionsAll[:, preyIdx, 1].long(),
+            actionsAll[:, preyIdx, 2].long(),
         )
 
         # ---- Next-step actions for target Q ----
@@ -440,10 +451,10 @@ class MARLeOM:
             for localIdx, agentIdx in enumerate(PREDATOR_INDICES):
                 agentNextObs = nextObsAll[:, agentIdx, :]
                 actorIn = self._buildActorInput(agentNextObs, preyObsNext)
-                mIdx, tIdx, aIdx, logP, _ = self.actors[localIdx].sampleAction(actorIn)
+                mIdx, tCont, aIdx, logP, _ = self.actors[localIdx].sampleAction(actorIn)
                 nextPredActionsOhParts.append(torch.cat([
                     F.one_hot(mIdx, N_MOVE).float(),
-                    F.one_hot(tIdx, N_TURN).float(),
+                    tCont.float().view(-1, 1).clamp(-1.0, 1.0),
                     F.one_hot(aIdx, N_ATTACK).float(),
                 ], dim=-1))
                 nextLogProbs[:, localIdx] = logP
@@ -500,9 +511,9 @@ class MARLeOM:
         for localIdx, agentIdx in enumerate(PREDATOR_INDICES):
             agentObs = obsAll[:, agentIdx, :]
             actorIn  = self._buildActorInput(agentObs, preyObsCur)
-            mIdx, tIdx, aIdx, logP, entropy = self.actors[localIdx].sampleAction(actorIn)
+            mIdx, tCont, aIdx, logP, entropy = self.actors[localIdx].sampleAction(actorIn)
 
-            newActionsOh = self._agentActionOnehot(actionsAll, localIdx, mIdx, tIdx, aIdx)
+            newActionsOh = self._agentActionOnehot(actionsAll, localIdx, mIdx, tCont, aIdx)
             # Use average Q (not min Q) consistent with critic update
             qAvg = (
                 self.critics[localIdx][0](globalState, newActionsOh) +
@@ -571,6 +582,12 @@ class MARLeOM:
             "oppModelL0": self.oppModelL0.state_dict(),
             "oppModelL1": self.oppModelL1.state_dict(),
             "logAlpha":   self.logAlpha.detach().cpu(),
+            "levelMix":   self.levelMix,
+            "psi":        self._psi,
+            "updateCount": self._updateCount,
+            "targetEntropy": self.targetEntropy,
+            "entropyStableCount": self._entropyStableCount,
+            "entropyEma": self._entropyEma,
         }, path)
 
     def load(self, path: str):
@@ -590,3 +607,16 @@ class MARLeOM:
         if "logAlpha" in ckpt:
             with torch.no_grad():
                 self.logAlpha.copy_(ckpt["logAlpha"].to(self.device))
+        if "levelMix" in ckpt:
+            self.levelMix = float(ckpt["levelMix"])
+        if "psi" in ckpt:
+            self._psi = np.array(ckpt["psi"], dtype=np.float64)
+            self._psi /= self._psi.sum()
+        if "updateCount" in ckpt:
+            self._updateCount = int(ckpt["updateCount"])
+        if "targetEntropy" in ckpt:
+            self.targetEntropy = float(ckpt["targetEntropy"])
+        if "entropyStableCount" in ckpt:
+            self._entropyStableCount = int(ckpt["entropyStableCount"])
+        if "entropyEma" in ckpt:
+            self._entropyEma = float(ckpt["entropyEma"])

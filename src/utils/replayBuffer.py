@@ -9,7 +9,7 @@ class ReplayBuffer:
     Stores transitions for all agents simultaneously.
     Each transition: (obsAll, actionsAll, rewardsAll, nextObsAll, dones)
       obsAll:     (NUM_AGENTS, OBS_DIM) float32
-      actionsAll: (NUM_AGENTS, 3)       int   - (moveIdx, turnIdx, attackIdx)
+            actionsAll: (NUM_AGENTS, 3)       float - (moveIdx, turnVal, attackIdx)
       rewardsAll: (NUM_AGENTS,)         float32
       nextObsAll: (NUM_AGENTS, OBS_DIM) float32
       dones:      (NUM_AGENTS,)         bool
@@ -28,7 +28,7 @@ class ReplayBuffer:
     ):
         self.buffer.append((
             obsAll.astype(np.float32),
-            actionsAll.astype(np.int64),
+            actionsAll.astype(np.float32),
             rewardsAll.astype(np.float32),
             nextObsAll.astype(np.float32),
             dones.astype(np.float32),

@@ -57,7 +57,7 @@ Training entrypoint: [experiments/trainMarleom.py](experiments/trainMarleom.py)
 	1. exact cumulative win%,
 	2. rolling-100 win% for smoother local trend.
 
-## 5. Code Organization (Updated)
+## 5. Code Organization
 
 1. Model definitions moved to [src/models](src/models):
 	1. [src/models/actorNetwork.py](src/models/actorNetwork.py)

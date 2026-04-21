@@ -5,9 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical, Normal
 
-from src.models.actorNetwork import ActorNetwork
-from src.models.preyActorNetwork import PreyActorNetwork
-from src.models.centralisedCritic import CentralisedCritic
+from src.models.mappo.actorNetwork import ActorNetwork
+from src.models.mappo.preyActorNetwork import PreyActorNetwork
+from src.models.mappo.centralisedCritic import CentralisedCritic
 from src.utils.obsUtils import (
     NUM_AGENTS, PREDATOR_INDICES, PREY_INDICES,
 )

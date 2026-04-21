@@ -4,17 +4,19 @@ import random
 import os
 import sys
 import math
+import json
 import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.envs.marleomEnv import MalmoEnv, MOVE_CMDS, TURN_CMDS, ATTACK_CMDS
-from src.models.actorNetwork import ActorNetwork
+from src.models.marleom.preyActorNetwork import PreyActorNetwork
 from src.agents.marleom import MARLeOM
+from src.utils.logs import MARLLogger
 from src.utils.replayBuffer import ReplayBuffer
 from src.utils.obsUtils import (
-    ACTION_ONEHOT_DIM,
+    ACTION_OH_DIM,
     flattenObsAll,
     NUM_AGENTS,
     PREDATOR_INDICES,
@@ -23,20 +25,20 @@ from src.utils.obsUtils import (
 MISSION_XML     = os.path.join(os.path.dirname(__file__), "..", "configs", "missionPredatorPrey.xml")
 
 # ---- Hyperparameters ----
-NUM_EPISODES    = 5000
 MAX_STEPS       = 100          # shorter episodes = more resets = more spawn diversity
 BUFFER_CAPACITY = 100_000
 BATCH_SIZE      = 256
 WARMUP_STEPS    = 5000
 UPDATE_EVERY    = 4
+WORLD_RESET_EVERY_UPDATES = 50
 LR              = 1e-3
 ALPHA           = 0.5          # higher entropy coeff forces exploration under sparse rewards
 GAMMA           = 0.99         # higher discount so distant tags are worth chasing
 TAU             = 0.01
 DEVICE          = "cpu"
-SAVE_EVERY      = 50
+SAVE_EVERY      = 10
 CKPT_DIR        = "checkpoints"
-LOG_INTERVAL    = 1            # print every episode — we format it ourselves below
+LOG_INTERVAL    = 10
 
 # Debug flag removed — levelMix is now a dynamic schedule inside MARLeOM
 
@@ -46,9 +48,32 @@ NEUTRAL_ACTION  = (2, 2, 1)
 def randomAction() -> tuple[int, int, int]:
     return (
         random.randint(0, len(MOVE_CMDS) - 1),
-        random.randint(0, len(TURN_CMDS) - 1),
+        random.uniform(-1.0, 1.0),
         random.randint(0, len(ATTACK_CMDS) - 1),
     )
+
+
+def _restoreEpisodeCountersFromJsonl(logPath: str) -> tuple[int, int]:
+    """Restore (episodes, wins) from existing JSONL episode records."""
+    if not os.path.exists(logPath):
+        return 0, 0
+
+    episodes = 0
+    wins = 0
+    with open(logPath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("record_type") != "episode":
+                continue
+            episodes += 1
+            wins += int(rec.get("win", 0))
+    return episodes, wins
 
 
 # Safe zone inside the arena walls — prey steers away if it gets this close
@@ -120,7 +145,7 @@ def preyPolicy(preyObs: dict, predObs: list[dict]) -> tuple[int, int, int]:
         goal_dx, goal_dz = flee_dx, flee_dz
 
     if (goal_dx ** 2 + goal_dz ** 2) < 0.01:
-        return (0, random.randint(0, 1), 1)
+        return (0, random.randint(0, 1), 0)
 
     # Target angle in Malmo convention (atan2(x, z))
     target_angle = math.degrees(math.atan2(goal_dx, goal_dz)) % 360.0
@@ -133,7 +158,7 @@ def preyPolicy(preyObs: dict, predObs: list[dict]) -> tuple[int, int, int]:
     else:
         turn = 0   # turn left
 
-    return (0, turn, 1)   # move forward, computed turn, never attack
+    return (0, turn, 0)   # move forward, computed turn, never attack
 
 
 def diagnoseActionCollapse(flatObs: np.ndarray, agent: MARLeOM) -> str:
@@ -153,7 +178,6 @@ def diagnoseActionCollapse(flatObs: np.ndarray, agent: MARLeOM) -> str:
     # Check actor move probabilities
     for idx, actor_dist in enumerate(debug_info["actors"]):
         moveP = actor_dist["moveP"]
-        turnP = actor_dist["turnP"]
         attackP = actor_dist["attackP"]
         
         # Calculate entropy as proxy for diversity
@@ -181,7 +205,7 @@ def main():
                      levelMixRampSteps=WARMUP_STEPS * 2)
     buffer = ReplayBuffer(BUFFER_CAPACITY)
 
-    preyActor     = ActorNetwork(inputDim=83).to("cpu")
+    preyActor     = PreyActorNetwork().to("cpu")
     preyOptimizer = torch.optim.Adam(preyActor.parameters(), lr=LR)
     preyAlpha     = ALPHA
 
@@ -192,7 +216,31 @@ def main():
         agent.load(ckptPath)
         print(f"Auto-loaded checkpoint from {ckptPath}")
 
+    predatorLogger = MARLLogger(
+        algo_name="MARLeOM_predator",
+        log_interval=LOG_INTERVAL,
+        seed=42,
+        log_file=os.path.join(CKPT_DIR, "marleom_predator_metrics.jsonl"),
+    )
+    preyLogger = MARLLogger(
+        algo_name="MARLeOM_prey",
+        log_interval=LOG_INTERVAL,
+        seed=42,
+        log_file=os.path.join(CKPT_DIR, "marleom_prey_metrics.jsonl"),
+    )
+
+    pred_eps, pred_wins = _restoreEpisodeCountersFromJsonl(predatorLogger.log_file)
+    prey_eps, prey_wins = _restoreEpisodeCountersFromJsonl(preyLogger.log_file)
+    predatorLogger._total_episodes = pred_eps
+    predatorLogger._total_wins = pred_wins
+    preyLogger._total_episodes = prey_eps
+    preyLogger._total_wins = prey_wins
+    if pred_eps > 0 or prey_eps > 0:
+        print(f"Appended logs: predator episodes={pred_eps}, prey episodes={prey_eps}")
+
     totalSteps  = 0
+    totalUpdates = 0
+    forceWorldRestartPending = False
     winHistory  = []   # per-episode win flags (1 tag, 0 otherwise)
 
     print(f"{'Ep':>5} {'Steps':>6} {'Return':>8} {'Win%Cum':>8} {'Win%R100':>8} "
@@ -200,130 +248,179 @@ def main():
           f"{'Alpha':>7} {'H_tgt':>6} {'H_pol':>6} {'EpSec':>6}")
     print("─" * 102)
 
-    for episode in range(1, NUM_EPISODES + 1):
-        t0             = time.time()
-        obsAll         = env.reset()
-        lastActionsAll = [NEUTRAL_ACTION] * NUM_AGENTS
-        flatObs        = flattenObsAll(obsAll, lastActionsAll)
+    episode = 0
+    try:
+        while True:
+            episode += 1
+            t0             = time.time()
+            obsAll         = env.reset(forceRestart=forceWorldRestartPending)
+            if forceWorldRestartPending:
+                print(f"[MARLeOM] Forced world restart at update {totalUpdates}")
+                forceWorldRestartPending = False
+            lastActionsAll = [NEUTRAL_ACTION] * NUM_AGENTS
+            flatObs        = flattenObsAll(obsAll, lastActionsAll)
 
-        episodeRewardPred = 0.0
-        episodeRewardPrey = 0.0
-        stepCount         = 0
+            episodeRewardPred = 0.0
+            episodeRewardPrey = 0.0
+            stepCount         = 0
 
-        # Accumulators for per-episode loss averages
-        criticLosses      = []
-        actorLosses       = []
-        omL0Losses        = []
-        omL1Losses        = []
-        alphaLosses       = []
-        alphaVals         = []
-        levelMixLast      = 0.0
-        psiL0Last         = 1.0
-        targetEntropyLast = float("nan")
-        policyEntropyLast = float("nan")
+            # Accumulators for per-episode loss averages
+            criticLosses      = []
+            actorLosses       = []
+            omL0Losses        = []
+            omL1Losses        = []
+            alphaLosses       = []
+            alphaVals         = []
+            levelMixLast      = 0.0
+            psiL0Last         = 1.0
+            targetEntropyLast = float("nan")
+            policyEntropyLast = float("nan")
 
-        for step in range(MAX_STEPS):
-            predObs = [obsAll[i] for i in PREDATOR_INDICES]
+            for step in range(MAX_STEPS):
+                predObs = [obsAll[i] for i in PREDATOR_INDICES]
 
-            if totalSteps < WARMUP_STEPS:
-                actions = [randomAction() for _ in range(NUM_AGENTS)]
-                actions[PREY_INDICES[0]] = preyPolicy(obsAll[PREY_INDICES[0]], predObs)
-            else:
-                actions = agent.selectActions(flatObs, explore=True)
-                if episode <= PREY_WARMUP_EPISODES:
+                if totalSteps < WARMUP_STEPS:
+                    actions = [randomAction() for _ in range(NUM_AGENTS)]
                     actions[PREY_INDICES[0]] = preyPolicy(obsAll[PREY_INDICES[0]], predObs)
                 else:
-                    preyObsT    = torch.FloatTensor(flatObs[PREY_INDICES[0]]).unsqueeze(0)
-                    pred0Oh     = torch.FloatTensor(flatObs[PREDATOR_INDICES[0], -ACTION_ONEHOT_DIM:]).unsqueeze(0)
-                    preyActorIn = torch.cat([preyObsT, pred0Oh], dim=-1)
-                    with torch.no_grad():
-                        pm, pt, pa, _, _ = preyActor.sampleAction(preyActorIn)
-                    actions[PREY_INDICES[0]] = (pm.item(), pt.item(), 1)
+                    actions = agent.selectActions(flatObs, explore=True)
+                    if episode <= PREY_WARMUP_EPISODES:
+                        actions[PREY_INDICES[0]] = preyPolicy(obsAll[PREY_INDICES[0]], predObs)
+                    else:
+                        preyObsT    = torch.FloatTensor(flatObs[PREY_INDICES[0]]).unsqueeze(0)
+                        pred0Oh     = torch.FloatTensor(flatObs[PREDATOR_INDICES[0], -ACTION_OH_DIM:]).unsqueeze(0)
+                        preyActorIn = torch.cat([preyObsT, pred0Oh], dim=-1)
+                        with torch.no_grad():
+                            pm, pt, _, _ = preyActor.sampleAction(preyActorIn)
+                            actions[PREY_INDICES[0]] = (pm.item(), pt.item(), 0)
 
-            nextObsAll, rewardsAll, donesAll = env.step(actions)
-            nextFlatObs = flattenObsAll(nextObsAll, actions)
+                nextObsAll, rewardsAll, donesAll = env.step(actions)
+                nextFlatObs = flattenObsAll(nextObsAll, actions)
 
-            buffer.push(
-                obsAll     = flatObs,
-                actionsAll = np.array(actions,    dtype=np.int64),
-                rewardsAll = np.array(rewardsAll, dtype=np.float32),
-                nextObsAll = nextFlatObs,
-                dones      = np.array(donesAll,   dtype=np.float32),
+                buffer.push(
+                    obsAll     = flatObs,
+                    actionsAll = np.array(actions,    dtype=np.float32),
+                    rewardsAll = np.array(rewardsAll, dtype=np.float32),
+                    nextObsAll = nextFlatObs,
+                    dones      = np.array(donesAll,   dtype=np.float32),
+                )
+
+                flatObs    = nextFlatObs
+                obsAll     = nextObsAll
+                totalSteps += 1
+                stepCount  += 1
+
+                episodeRewardPred += sum(rewardsAll[i] for i in PREDATOR_INDICES)
+                episodeRewardPrey += rewardsAll[PREY_INDICES[0]]
+
+                if totalSteps >= WARMUP_STEPS and totalSteps % UPDATE_EVERY == 0:
+                    if len(buffer) >= BATCH_SIZE:
+                        losses = agent.update(buffer.sample(BATCH_SIZE))
+                        totalUpdates += 1
+                        criticLosses.append(losses["criticLoss"])
+                        actorLosses.append(losses["actorLoss"])
+                        omL0Losses.append(losses["om0Loss"])
+                        omL1Losses.append(losses["om1Loss"])
+                        alphaLosses.append(losses["alphaLoss"])
+                        alphaVals.append(losses["alpha"])
+                        levelMixLast      = losses["levelMix"]
+                        psiL0Last         = losses["psiL0"]
+                        targetEntropyLast = losses["targetEntropy"]
+                        policyEntropyLast = losses["policyEntropy"]
+
+                        if totalUpdates % WORLD_RESET_EVERY_UPDATES == 0:
+                            forceWorldRestartPending = True
+
+                        if episode > PREY_WARMUP_EPISODES:
+                            obsNp, actNp, rewNp, _, _ = buffer.sample(BATCH_SIZE)
+                            preyIdx  = PREY_INDICES[0]
+                            pred0Idx = PREDATOR_INDICES[0]
+                            preyObsB  = torch.FloatTensor(obsNp[:, preyIdx, :])
+                            pred0OhB  = torch.FloatTensor(obsNp[:, pred0Idx, -ACTION_OH_DIM:])
+                            preyActIn = torch.cat([preyObsB, pred0OhB], dim=-1)
+                            preyRewB  = torch.FloatTensor(rewNp[:, preyIdx])
+
+                            pm, pt, logP, entropy = preyActor.sampleAction(preyActIn)
+                            baseline = preyRewB.mean().detach()
+                            preyLoss = -((preyRewB - baseline) * logP + preyAlpha * entropy).mean()
+                            preyOptimizer.zero_grad()
+                            preyLoss.backward()
+                            preyOptimizer.step()
+
+                if all(donesAll):
+                    break
+
+            # ---- Per-episode diagnostics (every 10 eps after warmup) ----
+            tagged = env.preyWasTagged   # True if episode ended by tag
+            winHistory.append(1 if tagged else 0)
+            # Exact cumulative win rate across all episodes so far.
+            cumulativeWinPct = 100.0 * sum(winHistory) / len(winHistory)
+
+            # Smoother local trend for plotting/monitoring.
+            rollingWindow = min(len(winHistory), 100)
+            rollingWinPct = 100.0 * sum(winHistory[-rollingWindow:]) / rollingWindow
+
+            epSec       = time.time() - t0
+            avgCritic   = float(np.mean(criticLosses))  if criticLosses  else float("nan")
+            avgActor    = float(np.mean(actorLosses))   if actorLosses   else float("nan")
+            avgOmL0     = float(np.mean(omL0Losses))    if omL0Losses    else float("nan")
+            avgOmL1     = float(np.mean(omL1Losses))    if omL1Losses    else float("nan")
+            avgAlpha    = float(np.mean(alphaVals))      if alphaVals     else float("nan")
+
+            diag      = diagnoseActionCollapse(flatObs, agent)
+            collapsed = "SPIN" if "DEGENERATE" in diag else "    "
+
+            print(f"{episode:5d} {totalSteps:6d} {episodeRewardPred:8.1f} {cumulativeWinPct:8.2f} {rollingWinPct:8.2f} "
+                        f"{avgCritic:8.4f} {avgActor:8.4f} {avgOmL0:7.4f} {avgOmL1:7.4f} "
+                        f"{avgAlpha:7.4f} {targetEntropyLast:6.3f} {policyEntropyLast:6.3f} {epSec:6.1f}  {collapsed}")
+
+            predatorLogger.log_episode(
+                episode        = predatorLogger._total_episodes + 1,
+                episode_return = episodeRewardPred,
+                win            = 1 if tagged else 0,
+                prey_return    = episodeRewardPrey,
+                survival_time  = stepCount,
+            )
+            preyLogger.log_episode(
+                episode         = preyLogger._total_episodes + 1,
+                episode_return  = episodeRewardPrey,
+                win             = 0 if tagged else 1,
+                predator_return = episodeRewardPred,
+                survival_time   = stepCount,
             )
 
-            flatObs    = nextFlatObs
-            obsAll     = nextObsAll
-            totalSteps += 1
-            stepCount  += 1
+            if episode % LOG_INTERVAL == 0:
+                predatorLogger.log_step(
+                    step           = episode,
+                    criticLoss     = avgCritic,
+                    actorLoss      = avgActor,
+                    omL0           = avgOmL0,
+                    omL1           = avgOmL1,
+                    alpha          = avgAlpha,
+                    targetEntropy  = targetEntropyLast,
+                    policyEntropy  = policyEntropyLast,
+                    sec_per_ep     = epSec,
+                )
+                preyLogger.log_step(
+                    step            = episode,
+                    preyReturn      = episodeRewardPrey,
+                    predatorReturn  = episodeRewardPred,
+                    sec_per_ep      = epSec,
+                )
 
-            episodeRewardPred += sum(rewardsAll[i] for i in PREDATOR_INDICES)
-            episodeRewardPrey += rewardsAll[PREY_INDICES[0]]
+            if episode % SAVE_EVERY == 0:
+                path = os.path.join(CKPT_DIR, f"marleom_update{episode}.pt")
+                latest_path = os.path.join(CKPT_DIR, "marleom_latest.pt")
+                agent.save(path)
+                agent.save(latest_path)
+                print(f"  -> checkpoint saved {path}")
 
-            if totalSteps >= WARMUP_STEPS and totalSteps % UPDATE_EVERY == 0:
-                if len(buffer) >= BATCH_SIZE:
-                    losses = agent.update(buffer.sample(BATCH_SIZE))
-                    criticLosses.append(losses["criticLoss"])
-                    actorLosses.append(losses["actorLoss"])
-                    omL0Losses.append(losses["om0Loss"])
-                    omL1Losses.append(losses["om1Loss"])
-                    alphaLosses.append(losses["alphaLoss"])
-                    alphaVals.append(losses["alpha"])
-                    levelMixLast      = losses["levelMix"]
-                    psiL0Last         = losses["psiL0"]
-                    targetEntropyLast = losses["targetEntropy"]
-                    policyEntropyLast = losses["policyEntropy"]
-
-                    if episode > PREY_WARMUP_EPISODES:
-                        obsNp, actNp, rewNp, _, _ = buffer.sample(BATCH_SIZE)
-                        preyIdx  = PREY_INDICES[0]
-                        pred0Idx = PREDATOR_INDICES[0]
-                        preyObsB  = torch.FloatTensor(obsNp[:, preyIdx, :])
-                        pred0OhB  = torch.FloatTensor(obsNp[:, pred0Idx, -ACTION_ONEHOT_DIM:])
-                        preyActIn = torch.cat([preyObsB, pred0OhB], dim=-1)
-                        preyRewB  = torch.FloatTensor(rewNp[:, preyIdx])
-
-                        pm, pt, pa, logP, entropy = preyActor.sampleAction(preyActIn)
-                        baseline = preyRewB.mean().detach()
-                        preyLoss = -((preyRewB - baseline) * logP + preyAlpha * entropy).mean()
-                        preyOptimizer.zero_grad()
-                        preyLoss.backward()
-                        preyOptimizer.step()
-
-            if all(donesAll):
-                break
-
-        # ---- Per-episode diagnostics (every 10 eps after warmup) ----
-        tagged = env.preyWasTagged   # True if episode ended by tag
-        winHistory.append(1 if tagged else 0)
-        # Exact cumulative win rate across all episodes so far.
-        cumulativeWinPct = 100.0 * sum(winHistory) / len(winHistory)
-
-        # Smoother local trend for plotting/monitoring.
-        rollingWindow = min(len(winHistory), 100)
-        rollingWinPct = 100.0 * sum(winHistory[-rollingWindow:]) / rollingWindow
-
-        epSec       = time.time() - t0
-        avgCritic   = float(np.mean(criticLosses))  if criticLosses  else float("nan")
-        avgActor    = float(np.mean(actorLosses))   if actorLosses   else float("nan")
-        avgOmL0     = float(np.mean(omL0Losses))    if omL0Losses    else float("nan")
-        avgOmL1     = float(np.mean(omL1Losses))    if omL1Losses    else float("nan")
-        avgAlpha    = float(np.mean(alphaVals))      if alphaVals     else float("nan")
-
-        diag      = diagnoseActionCollapse(flatObs, agent)
-        collapsed = "SPIN" if "DEGENERATE" in diag else "    "
-
-        print(f"{episode:5d} {totalSteps:6d} {episodeRewardPred:8.1f} {cumulativeWinPct:8.2f} {rollingWinPct:8.2f} "
-                    f"{avgCritic:8.4f} {avgActor:8.4f} {avgOmL0:7.4f} {avgOmL1:7.4f} "
-                    f"{avgAlpha:7.4f} {targetEntropyLast:6.3f} {policyEntropyLast:6.3f} {epSec:6.1f}  {collapsed}")
-
-        if episode % SAVE_EVERY == 0:
-            path = os.path.join(CKPT_DIR, f"marleom_ep{episode}.pt")
-            latest_path = os.path.join(CKPT_DIR, "marleom_latest.pt")
-            agent.save(path)
-            agent.save(latest_path)
-            print(f"  └─ checkpoint saved → {path}")
+    except KeyboardInterrupt:
+        print("\n[MARLeOM] Stopped by user (Ctrl+C). Saving final checkpoint...")
 
     agent.save(os.path.join(CKPT_DIR, "marleom_final.pt"))
+    predatorLogger.print_final_summary()
+    preyLogger.print_final_summary()
     print("\nTraining complete.")
 
 
