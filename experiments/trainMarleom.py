@@ -25,7 +25,7 @@ from src.utils.obsUtils import (
 MISSION_XML     = os.path.join(os.path.dirname(__file__), "..", "configs", "missionPredatorPrey.xml")
 
 # ---- Hyperparameters ----
-MAX_STEPS       = 100          # shorter episodes = more resets = more spawn diversity
+MAX_STEPS       = 500
 BUFFER_CAPACITY = 100_000
 BATCH_SIZE      = 256
 WARMUP_STEPS    = 5000
@@ -209,8 +209,6 @@ def main():
     preyOptimizer = torch.optim.Adam(preyActor.parameters(), lr=LR)
     preyAlpha     = ALPHA
 
-    PREY_WARMUP_EPISODES = 20
-
     ckptPath = os.path.join(CKPT_DIR, "marleom_latest.pt")
     if os.path.exists(ckptPath):
         agent.load(ckptPath)
@@ -284,15 +282,12 @@ def main():
                     actions[PREY_INDICES[0]] = preyPolicy(obsAll[PREY_INDICES[0]], predObs)
                 else:
                     actions = agent.selectActions(flatObs, explore=True)
-                    if episode <= PREY_WARMUP_EPISODES:
-                        actions[PREY_INDICES[0]] = preyPolicy(obsAll[PREY_INDICES[0]], predObs)
-                    else:
-                        preyObsT    = torch.FloatTensor(flatObs[PREY_INDICES[0]]).unsqueeze(0)
-                        pred0Oh     = torch.FloatTensor(flatObs[PREDATOR_INDICES[0], -ACTION_OH_DIM:]).unsqueeze(0)
-                        preyActorIn = torch.cat([preyObsT, pred0Oh], dim=-1)
-                        with torch.no_grad():
-                            pm, pt, _, _ = preyActor.sampleAction(preyActorIn)
-                            actions[PREY_INDICES[0]] = (pm.item(), pt.item(), 0)
+                    preyObsT    = torch.FloatTensor(flatObs[PREY_INDICES[0]]).unsqueeze(0)
+                    pred0Oh     = torch.FloatTensor(flatObs[PREDATOR_INDICES[0], -ACTION_OH_DIM:]).unsqueeze(0)
+                    preyActorIn = torch.cat([preyObsT, pred0Oh], dim=-1)
+                    with torch.no_grad():
+                        pm, pt, _, _ = preyActor.sampleAction(preyActorIn)
+                        actions[PREY_INDICES[0]] = (pm.item(), pt.item(), 0)
 
                 nextObsAll, rewardsAll, donesAll = env.step(actions)
                 nextFlatObs = flattenObsAll(nextObsAll, actions)
@@ -331,21 +326,20 @@ def main():
                         if totalUpdates % WORLD_RESET_EVERY_UPDATES == 0:
                             forceWorldRestartPending = True
 
-                        if episode > PREY_WARMUP_EPISODES:
-                            obsNp, actNp, rewNp, _, _ = buffer.sample(BATCH_SIZE)
-                            preyIdx  = PREY_INDICES[0]
-                            pred0Idx = PREDATOR_INDICES[0]
-                            preyObsB  = torch.FloatTensor(obsNp[:, preyIdx, :])
-                            pred0OhB  = torch.FloatTensor(obsNp[:, pred0Idx, -ACTION_OH_DIM:])
-                            preyActIn = torch.cat([preyObsB, pred0OhB], dim=-1)
-                            preyRewB  = torch.FloatTensor(rewNp[:, preyIdx])
+                        obsNp, actNp, rewNp, _, _ = buffer.sample(BATCH_SIZE)
+                        preyIdx  = PREY_INDICES[0]
+                        pred0Idx = PREDATOR_INDICES[0]
+                        preyObsB  = torch.FloatTensor(obsNp[:, preyIdx, :])
+                        pred0OhB  = torch.FloatTensor(obsNp[:, pred0Idx, -ACTION_OH_DIM:])
+                        preyActIn = torch.cat([preyObsB, pred0OhB], dim=-1)
+                        preyRewB  = torch.FloatTensor(rewNp[:, preyIdx])
 
-                            pm, pt, logP, entropy = preyActor.sampleAction(preyActIn)
-                            baseline = preyRewB.mean().detach()
-                            preyLoss = -((preyRewB - baseline) * logP + preyAlpha * entropy).mean()
-                            preyOptimizer.zero_grad()
-                            preyLoss.backward()
-                            preyOptimizer.step()
+                        pm, pt, logP, entropy = preyActor.sampleAction(preyActIn)
+                        baseline = preyRewB.mean().detach()
+                        preyLoss = -((preyRewB - baseline) * logP + preyAlpha * entropy).mean()
+                        preyOptimizer.zero_grad()
+                        preyLoss.backward()
+                        preyOptimizer.step()
 
                 if all(donesAll):
                     break
