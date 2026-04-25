@@ -17,7 +17,7 @@ The BR is trained as the PREY agent (self-agent, index 2) while
 Predator1 and Predator2 follow the fixed scripted policy π⁻¹,k.
 
 Input: 128-dim VoxelEncoder output (state representation)
-Output: logits over 18 actions (flat multidiscrete)
+Output: logits over 30 actions (3 move * 5 turn_bins * 2 attack)
 """
 
 import torch
@@ -33,7 +33,7 @@ import os
 # ─────────────────────────────────────────────────────────────────
 
 STATE_DIM         = 128
-N_ACTIONS         = 18      # 3 move * 3 turn * 2 attack (flat)
+N_ACTIONS         = 30      # 3 move * 5 turn_bins * 2 attack (flat)
 HIDDEN_DIM        = 32
 N_LAYERS          = 3
 LR_ACTOR          = 5e-4
@@ -66,7 +66,7 @@ def _build_mlp(in_dim, hidden_dim, n_layers, out_dim, activation=nn.ReLU):
 class BRActorCritic(nn.Module):
     """
     Shared-trunk actor-critic for PPO Best Response training.
-    Actor:  outputs logits over 18 flat actions
+    Actor:  outputs logits over 30 flat actions
     Critic: outputs scalar state value
     """
 
