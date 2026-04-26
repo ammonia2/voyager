@@ -328,7 +328,12 @@ def main():
     )
 
     # ── Logger ───────────────────────────────────────────────────
-    logger = MARLLogger(algo_name=algo, log_interval=1)
+    # Create separate loggers for evaluated agent (prey) and opponents (predators)
+    prey_log_file = os.path.join(OMIS_CKPT_DIR, "omis_prey_metrics.jsonl")
+    pred_log_file = os.path.join(OMIS_CKPT_DIR, "omis_predator_metrics.jsonl")
+    
+    logger_prey = MARLLogger(algo_name=algo, log_interval=1, seed=0, log_file=prey_log_file)
+    logger_pred = MARLLogger(algo_name=algo, log_interval=1, seed=0, log_file=pred_log_file)
 
     # ── Evaluation loop (Algorithm 1 lines 11-24) ────────────────
     import random
@@ -376,17 +381,33 @@ def main():
                     recent_trajs[config_idx].pop(0)
 
             # Log
-            logger.log_episode(
+            # Log evaluated agent (prey) metrics
+            logger_prey.log_episode(
                 episode        = global_episode + 1,
                 episode_return = metrics["episode_return"],
                 win            = metrics["win"],
                 opponent_type  = opp_type,
             )
-            logger.log_eval(
+            logger_prey.log_eval(
                 episode        = global_episode + 1,
                 episode_return = metrics["episode_return"],
                 win            = metrics["win"],
                 opponent_acc   = metrics["opp_acc"],
+                opponent_type  = opp_type,
+            )
+            
+            # Log opponent (predator) metrics as inverse
+            logger_pred.log_episode(
+                episode        = global_episode + 1,
+                episode_return = -metrics["episode_return"],  # opponent's perspective
+                win            = 1 - metrics["win"],          # opponent wins if prey escapes
+                opponent_type  = opp_type,
+            )
+            logger_pred.log_eval(
+                episode        = global_episode + 1,
+                episode_return = -metrics["episode_return"],
+                win            = 1 - metrics["win"],
+                opponent_acc   = 1 - metrics["opp_acc"] if metrics["opp_acc"] > 0 else 0,
                 opponent_type  = opp_type,
             )
 
@@ -399,8 +420,10 @@ def main():
         )
 
     # ── Final eval summary ───────────────────────────────────────
-    logger.print_eval_summary(episode=global_episode)
-    logger.print_final_summary()
+    logger_prey.print_eval_summary(episode=global_episode)
+    logger_prey.print_final_summary()
+    logger_pred.print_eval_summary(episode=global_episode)
+    logger_pred.print_final_summary()
 
     # ── Save evaluation results ───────────────────────────────────
     import json
