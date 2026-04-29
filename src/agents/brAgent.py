@@ -19,7 +19,7 @@ Predator1 and Predator2 follow the fixed scripted policy π⁻¹,k.
 Input: 128-dim VoxelEncoder output (state representation)
 Output: logits over 30 actions (3 move * 5 turn_bins * 2 attack)
 """
-
+from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,7 +32,7 @@ import os
 # Hyperparameters (Appendix H.2)
 # ─────────────────────────────────────────────────────────────────
 
-STATE_DIM         = 128
+STATE_DIM         = 147   # flattenObs output dim (OBS_DIM)
 N_ACTIONS         = 30      # 3 move * 5 turn_bins * 2 attack (flat)
 HIDDEN_DIM        = 32
 N_LAYERS          = 3
@@ -43,7 +43,7 @@ GRAD_CLIP         = 5.0
 GAMMA             = 1.0     # discount factor for BR training
 BATCH_SIZE        = 4096
 N_EPOCHS          = 10      # PPO update epochs per batch
-TOTAL_EPISODES    = 50
+TOTAL_EPISODES    = 500
 GAE_LAMBDA        = 0.95    # for advantage estimation
 
 

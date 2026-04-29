@@ -1,98 +1,149 @@
 """
 trainBR.py
 ==========
-Phase 1 of OMIS pipeline (predator-overhaul version).
+Phase 1 of OMIS pipeline — distributed PDC version.
 
-Train BR predator policies against fixed scripted prey evasion policies.
-Learner: Predator1 (index 0)
-Teammate: Predator2 (index 1) using same BR network (self-play style)
-Opponent: Prey (index 2) scripted by policy k
+Each worker runs its own Malmo arena and collects rollouts independently.
+After each update, gradients are averaged across all workers (all_reduce),
+keeping all replicas synchronized — same pattern as trainMappo.py.
+
+Run:
+  python experiments/trainBR.py --policy 0 --numWorkers 1   # single
+  python experiments/trainBR.py --policy 0 --numWorkers 2   # 2 workers
 """
 
 import os
 import sys
+import time
+import tempfile
 import argparse
+
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from envs.malmoEnvOmis import MalmoEnv
-from models.voxelEncoder import VoxelEncoder
-from agents.brAgent import PPOTrainer, TOTAL_EPISODES
-from utils.obsUtils import flattenObs
-from utils.scriptedPolicies import (
+from src.envs.malmoEnvOmis import MalmoEnv
+from src.agents.brAgent import PPOTrainer, TOTAL_EPISODES
+from src.utils.obsUtils import flattenObs
+from src.utils.scriptedPolicies import (
     get_prey_policy_by_index,
     decode_pred_action_30,
     turn_bin5_to_cont,
 )
-from utils.logs import MARLLogger
+from src.utils.logs import MARLLogger
 
 
 MISSION_XML = os.path.join(os.path.dirname(__file__), "..", "configs", "missionPredatorPrey.xml")
-CKPT_DIR = os.path.join(os.path.dirname(__file__), "..", "checkpoints", "br")
+CKPT_DIR    = os.path.join(os.path.dirname(__file__), "..", "checkpoints", "br")
 
-LOG_INTERVAL = 1
-SAVE_INTERVAL = 1000
+LOG_INTERVAL  = 10
+SAVE_INTERVAL = 50
 
-SELF_AGENT_IDX = 0
-TEAMMATE_IDX = 1
-PREY_IDX = 2
-
-
-def encode_obs(agent_idx, obs_all, last_actions, voxel_encoder, device):
-    """Encode one agent's observation into 128-dim state vector."""
-    flat = flattenObs(agent_idx, obs_all[agent_idx], obs_all, last_actions)
-    flat_t = torch.tensor(flat, dtype=torch.float32).unsqueeze(0).to(device)
-    with torch.no_grad():
-        state = voxel_encoder(flat_t)
-    return state.squeeze(0).cpu().numpy()
+SELF_AGENT_IDX   = 0
+TEAMMATE_IDX     = 1
+PREY_IDX         = 2
+PORTS_PER_WORKER = 3
 
 
-def train_br(policy_idx, env, voxel_encoder, device, resume=False):
-    """Train BR predator against one scripted prey policy."""
+# ─────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────
+
+def encode_obs(agent_idx, obs_all, last_actions):
+    """Flatten one agent's observation to a numpy array (147-dim)."""
+    return flattenObs(agent_idx, obs_all[agent_idx], obs_all, last_actions)
+
+
+def _allReduceGrads(params, worldSize):
+    for p in params:
+        if p.grad is not None:
+            dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+            p.grad.div_(worldSize)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Worker
+# ─────────────────────────────────────────────────────────────────
+
+def workerFn(rank, worldSize, args):
+    # ── Distributed setup ──────────────────────────────────────
+    if worldSize > 1:
+        rendUrl = f"file:///{args.rendFile.replace(chr(92), '/')}"
+        dist.init_process_group(
+            backend    = "gloo",
+            init_method= rendUrl,
+            rank       = rank,
+            world_size = worldSize,
+        )
+
+    device = torch.device("cpu")
+
+    # Each worker gets its own 3-port Malmo arena
+    env = MalmoEnv(MISSION_XML, portOffset=rank * PORTS_PER_WORKER)
+
     os.makedirs(CKPT_DIR, exist_ok=True)
-    ckpt_path = os.path.join(CKPT_DIR, f"br_policy_{policy_idx}.pt")
+    ckpt_path = os.path.join(CKPT_DIR, f"br_policy_{args.policy}.pt")
 
-    prey_policy = get_prey_policy_by_index(policy_idx)
-    trainer = PPOTrainer(policy_idx=policy_idx, device=device)
+    prey_policy = get_prey_policy_by_index(args.policy)
+    trainer     = PPOTrainer(policy_idx=args.policy, device=str(device))
 
     start_episode = 0
-    if resume and os.path.exists(ckpt_path):
+    if args.resume and os.path.exists(ckpt_path):
         trainer.load(ckpt_path)
         start_episode = trainer.total_updates
 
-    logger = MARLLogger(
-        algo_name=f"BR_pred_policy_{policy_idx}_{prey_policy.name}",
-        log_interval=LOG_INTERVAL,
-        seed=policy_idx,
-    )
+    # Broadcast initial weights from rank 0
+    if worldSize > 1:
+        for p in trainer.net.parameters():
+            dist.broadcast(p.data, src=0)
+        dist.barrier()
 
-    print(f"\n{'=' * 60}", flush=True)
-    print(f"Training Predator BR against prey policy {policy_idx}: {prey_policy.name}", flush=True)
-    print(f"{'=' * 60}", flush=True)
+    # ── Logger + header (rank 0 only) ─────────────────────────
+    logger = None
+    if rank == 0:
+        logger = MARLLogger(
+            algo_name    = f"BR_pred_policy_{args.policy}_{prey_policy.name}",
+            log_interval = LOG_INTERVAL,
+            seed         = args.policy,
+            log_file     = os.path.join(CKPT_DIR, f"br_policy_{args.policy}_metrics.jsonl"),
+        )
+        print(f"\nTraining BR predator vs prey policy {args.policy}: {prey_policy.name}")
+        print(f"Workers: {worldSize}  |  Total episodes: {args.maxEpisodes}")
+        print(f"{'Ep':>5} {'Steps':>7} {'Return':>8} {'Win%':>8} {'PLoss':>8} {'VLoss':>8} {'EpSec':>6}")
+        print("-" * 58)
 
-    for episode in range(start_episode, TOTAL_EPISODES):
-        obs_all = env.reset()
-        done = False
+    total_steps = 0
+    win_history = []
+    episodes_this_worker = args.maxEpisodes // worldSize
+
+    for episode in range(start_episode, episodes_this_worker):
+        t0        = time.time()
+        obs_all   = env.reset()
+        done      = False
         ep_return = 0.0
 
         last_actions = [
             (2, 0.0, 1),
             (2, 0.0, 1),
-            (2, 2, 0),
+            (2, 2,   0),
         ]
 
+        last_losses = {"actor_loss": 0.0, "critic_loss": 0.0}
+
         while not done:
-            state_self = encode_obs(SELF_AGENT_IDX, obs_all, last_actions, voxel_encoder, device)
-            state_team = encode_obs(TEAMMATE_IDX, obs_all, last_actions, voxel_encoder, device)
+            state_self = encode_obs(SELF_AGENT_IDX, obs_all, last_actions)
+            state_team = encode_obs(TEAMMATE_IDX,   obs_all, last_actions)
 
             self_act, log_prob, value = trainer.select_action(state_self)
-            team_act, _, _ = trainer.select_action(state_team)
+            team_act, _,        _    = trainer.select_action(state_team)
 
             move0, turn_bin0, attack0 = decode_pred_action_30(self_act)
             move1, turn_bin1, attack1 = decode_pred_action_30(team_act)
+            prey_move, prey_turn      = prey_policy(obs_all[PREY_IDX], PREY_IDX)
 
-            prey_move, prey_turn = prey_policy(obs_all[PREY_IDX], PREY_IDX)
             actions = [
                 (move0, turn_bin5_to_cont(turn_bin0), attack0),
                 (move1, turn_bin5_to_cont(turn_bin1), attack1),
@@ -100,71 +151,87 @@ def train_br(policy_idx, env, voxel_encoder, device, resume=False):
             ]
 
             obs_next, rewards, dones = env.step(actions)
-
             self_reward = rewards[SELF_AGENT_IDX]
-            done = bool(dones[SELF_AGENT_IDX])
+            done        = bool(dones[SELF_AGENT_IDX])
 
             trainer.store(state_self, self_act, log_prob, self_reward, value, float(done))
-
-            ep_return += self_reward
-            obs_all = obs_next
+            ep_return   += self_reward
+            total_steps += worldSize
+            obs_all      = obs_next
             last_actions = actions
 
             if trainer.buffer.is_full():
                 if not done:
-                    next_state = encode_obs(SELF_AGENT_IDX, obs_all, last_actions, voxel_encoder, device)
-                    _, _, last_val = trainer.select_action(next_state)
+                    ns       = encode_obs(SELF_AGENT_IDX, obs_all, last_actions)
+                    _, _, lv = trainer.select_action(ns)
                 else:
-                    last_val = 0.0
-                trainer.update(last_value=last_val)
+                    lv = 0.0
+
+                last_losses = trainer.update(last_value=lv)
+
+                if worldSize > 1:
+                    _allReduceGrads(list(trainer.net.parameters()), worldSize)
+                    dist.barrier()
 
         if len(trainer.buffer) > 0:
-            trainer.update(last_value=0.0)
+            last_losses = trainer.update(last_value=0.0)
+            if worldSize > 1:
+                _allReduceGrads(list(trainer.net.parameters()), worldSize)
+                dist.barrier()
 
-        logger.log_episode(
-            episode=episode + 1,
-            episode_return=ep_return,
-            win=int(env.preyWasTagged),
-        )
+        # ── Logging (rank 0 only) ──────────────────────────────
+        if rank == 0:
+            ep_sec  = time.time() - t0
+            tagged  = env.preyWasTagged
+            win_history.append(1 if tagged else 0)
+            win_pct = 100.0 * sum(win_history[-100:]) / min(len(win_history), 100)
 
-        print(f"  Policy {policy_idx} | Ep {episode + 1} | Return {ep_return:.2f}", flush=True)
+            print(f"{episode+1:5d} {total_steps:7d} {ep_return:8.1f} {win_pct:8.2f} "
+                  f"{last_losses['actor_loss']:8.4f} {last_losses['critic_loss']:8.4f} {ep_sec:6.1f}")
 
-        if (episode + 1) % SAVE_INTERVAL == 0:
-            trainer.save(ckpt_path)
+            logger.log_episode(
+                episode        = episode + 1,
+                episode_return = ep_return,
+                win            = int(tagged),
+            )
 
-    trainer.save(ckpt_path)
-    logger.print_final_summary()
-    return trainer
+            if (episode + 1) % SAVE_INTERVAL == 0:
+                trainer.save(ckpt_path)
 
+    if rank == 0:
+        trainer.save(ckpt_path)
+        logger.print_final_summary()
+
+    if worldSize > 1:
+        dist.destroy_process_group()
+
+
+# ─────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Train predator BR agents for OMIS")
-    parser.add_argument("--policy", type=int, default=-1, help="Train only this prey policy index")
-    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
-    parser.add_argument("--device", type=str, default="cpu", help="cpu or cuda")
+    parser = argparse.ArgumentParser(description="Train BR predator for OMIS (distributed)")
+    parser.add_argument("--policy",      type=int,  default=0,   help="Prey policy index (0-9)")
+    parser.add_argument("--numWorkers",  type=int,  default=1,   help="Number of parallel workers")
+    parser.add_argument("--maxEpisodes", type=int,  default=500, help="Total episodes across all workers")
+    parser.add_argument("--resume",      action="store_true",    help="Resume from checkpoint")
     args = parser.parse_args()
 
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    env = MalmoEnv(MISSION_XML)
-
-    voxel_encoder = VoxelEncoder().to(device)
-    voxel_encoder.eval()
-    for param in voxel_encoder.parameters():
-        param.requires_grad = False
-
-    if args.policy >= 0:
-        policy_indices = [args.policy]
+    if args.numWorkers > 1:
+        rendFile = os.path.join(
+            tempfile.gettempdir(),
+            f"br_dist_policy{args.policy}.rend",
+        )
+        if os.path.exists(rendFile):
+            os.remove(rendFile)
+        args.rendFile = rendFile
+        mp.spawn(workerFn, args=(args.numWorkers, args), nprocs=args.numWorkers, join=True)
     else:
-        policy_indices = list(range(10))
+        args.rendFile = ""
+        workerFn(0, 1, args)
 
-    for k in policy_indices:
-        train_br(k, env, voxel_encoder, device, resume=args.resume)
-        print(f"\n[trainBR] Completed BR for prey policy {k}")
-
-    print("\n[trainBR] All BR agents trained successfully.")
-    print(f"Checkpoints saved to: {CKPT_DIR}")
+    print(f"\n[trainBR] Done. Policy {args.policy} → {CKPT_DIR}")
     print("Next step: run experiments/trainOMIS.py")
 
 
