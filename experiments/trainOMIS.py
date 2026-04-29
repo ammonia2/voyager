@@ -5,6 +5,7 @@ Phase 2 of OMIS pipeline: supervised in-context pretraining
 for the shared dual-predator OMIS model.
 """
 
+from __future__ import annotations
 import os
 import sys
 import argparse
@@ -13,12 +14,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agents.omisAgent import OMISModel
-from utils.dataCollector import DataCollector, PretrainDataset
-from utils.logs import MARLLogger
-from envs.malmoEnvOmis import MalmoEnv
+from src.agents.omisAgent import OMISModel
+from src.utils.dataCollector import DataCollector, PretrainDataset
+from src.utils.logs import MARLLogger
+from src.envs.malmoEnvOmis import MalmoEnv
 
 
 MISSION_XML = os.path.join(os.path.dirname(__file__), "..", "configs", "missionPredatorPrey.xml")
@@ -26,7 +27,7 @@ BR_CKPT_DIR = os.path.join(os.path.dirname(__file__), "..", "checkpoints", "br")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "pretrain")
 OMIS_CKPT_DIR = os.path.join(os.path.dirname(__file__), "..", "checkpoints", "omis")
 
-TOTAL_STEPS = 50
+TOTAL_STEPS = 500
 BATCH_SIZE = 64
 N_EPOCHS = 10
 LR = 6e-4

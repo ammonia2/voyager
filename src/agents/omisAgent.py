@@ -11,6 +11,7 @@ Design:
   - Prey: 9 classes (3 move * 3 turn)
 """
 
+from __future__ import annotations
 import math
 import torch
 import torch.nn as nn
@@ -21,7 +22,7 @@ import torch.nn.functional as F
 # Constants
 # ---------------------------------------------------------------------------
 
-STATE_DIM = 128
+STATE_DIM = 147
 
 TURN_BINS = 5
 N_SELF_ACTIONS = 30
@@ -599,10 +600,10 @@ class DecisionTimeSearch:
         model,
         env_model,
         n_self_actions: int = N_SELF_ACTIONS,
-        M: int = 3,
-        L: int = 3,
+        M: int = 2,
+        L: int = 1,
         gamma_search: float = 0.7,
-        epsilon: float = 10.0,
+        epsilon: float = 0.0,
         device: str = "cpu",
     ):
         self.model = model
@@ -617,9 +618,18 @@ class DecisionTimeSearch:
     @torch.no_grad()
     def select_action(self, context_builder: ContextBuilder, query_state, query_timestep: int):
         self.model.eval()
+        
+        # Get actor policy to filter top actions
+        ctx_main = context_builder.get_input_tensors(query_state, query_timestep)
+        _, actor_logits = self.model.get_action(**ctx_main)
+        probs = torch.softmax(actor_logits, dim=-1).squeeze(0)
+        
+        # Only search Top-3 actions to save compute
+        top_k_indices = torch.topk(probs, k=min(3, self.n_self_actions)).indices.cpu().numpy()
+        
         q_values = {}
-
-        for candidate in range(self.n_self_actions):
+        for candidate in top_k_indices:
+            candidate = int(candidate)
             q_sum = 0.0
             for _ in range(self.M):
                 cumulative_r = 0.0
