@@ -9,6 +9,7 @@ Scripted policy registries for OMIS overhaul.
 
 import math
 import random
+from typing import Tuple, Optional, Set, List
 
 ARENA_MIN = 2.0
 ARENA_MAX = 18.0
@@ -45,7 +46,7 @@ def _turn_idx_from_diff(diff: float, threshold: float = 10.0) -> int:
     return 2      # none
 
 
-def _get_pos_yaw(obs: dict) -> tuple[float, float, float]:
+def _get_pos_yaw(obs: dict) -> Tuple[float, float, float]:
     pos = obs.get("pos", [0.0, 0.0])
     return float(pos[0]), float(pos[1]), float(obs.get("yaw", 0.0))
 
@@ -54,11 +55,11 @@ def _entity_name(entity: dict) -> str:
     return str(entity.get("name", ""))
 
 
-def _entity_xz(entity: dict) -> tuple[float, float]:
+def _entity_xz(entity: dict) -> Tuple[float, float]:
     return float(entity.get("x", 0.0)), float(entity.get("z", 0.0))
 
 
-def _nearest_entity(obs: dict, name_filter: set[str]) -> dict | None:
+def _nearest_entity(obs: dict, name_filter: Set[str]) -> Optional[dict]:
     sx, sz, _ = _get_pos_yaw(obs)
     best = None
     best_d = float("inf")
@@ -73,15 +74,15 @@ def _nearest_entity(obs: dict, name_filter: set[str]) -> dict | None:
     return best
 
 
-def _nearest_predator(obs: dict) -> dict | None:
+def _nearest_predator(obs: dict) -> Optional[dict]:
     return _nearest_entity(obs, {"Predator1", "Predator2"})
 
 
-def _nearest_prey(obs: dict) -> dict | None:
+def _nearest_prey(obs: dict) -> Optional[dict]:
     return _nearest_entity(obs, {"Prey1"})
 
 
-def _clamp_to_arena(x: float, z: float) -> tuple[float, float]:
+def _clamp_to_arena(x: float, z: float) -> Tuple[float, float]:
     return max(ARENA_MIN, min(ARENA_MAX, x)), max(ARENA_MIN, min(ARENA_MAX, z))
 
 
@@ -93,14 +94,14 @@ def _clamp_to_arena(x: float, z: float) -> tuple[float, float]:
 class RandomPredatorPolicy:
     name = "random_predator"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int, int]:
         return random.randint(0, 2), random.randint(0, 2), random.randint(0, 1)
 
 
 class AggressivePredatorPolicy:
     name = "aggressive_predator"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int, int]:
         prey = _nearest_prey(obs)
         if prey is None:
             return 0, 2, 1
@@ -119,7 +120,7 @@ class ZigzagPredatorPolicy:
         self._tick = 0
         self._zig = 1
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int, int]:
         self._tick += 1
         if self._tick % 5 == 0:
             self._zig *= -1
@@ -139,7 +140,7 @@ class ZigzagPredatorPolicy:
 class CautiousPredatorPolicy:
     name = "cautious_predator"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int, int]:
         prey = _nearest_prey(obs)
         if prey is None:
             return 2, 2, 1
@@ -160,7 +161,7 @@ class CautiousPredatorPolicy:
 class WallSweepPredatorPolicy:
     name = "wall_sweep_predator"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int, int]:
         sx, sz, syaw = _get_pos_yaw(obs)
         nearest_wall_x = ARENA_MIN if abs(sx - ARENA_MIN) < abs(sx - ARENA_MAX) else ARENA_MAX
         tx, tz = nearest_wall_x, sz
@@ -213,14 +214,14 @@ def get_policy_by_index(k: int):
 class RandomPreyPolicy:
     name = "random_prey"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         return random.randint(0, 2), random.randint(0, 2)
 
 
 class FleeNearestPolicy:
     name = "flee_nearest"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         predator = _nearest_predator(obs)
         if predator is None:
             return 0, 2
@@ -239,7 +240,7 @@ class ZigzagFleePolicy:
         self._tick = 0
         self._zig = 1
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         self._tick += 1
         if self._tick % 5 == 0:
             self._zig *= -1
@@ -257,7 +258,7 @@ class ZigzagFleePolicy:
 class WallHugPolicy:
     name = "wall_hug"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         sx, sz, syaw = _get_pos_yaw(obs)
         candidates = [
             (ARENA_MIN, sz),
@@ -273,7 +274,7 @@ class WallHugPolicy:
 class CenterHoldPolicy:
     name = "center_hold"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         sx, sz, syaw = _get_pos_yaw(obs)
         predator = _nearest_predator(obs)
         if predator is None:
@@ -296,7 +297,7 @@ class SpinPolicy:
     def __init__(self):
         self._right = True
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         turn = 1 if self._right else 0
         self._right = not self._right
         return 0, turn
@@ -305,7 +306,7 @@ class SpinPolicy:
 class StochasticFleePolicy:
     name = "stochastic_flee"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         if random.random() < 0.2:
             return random.randint(0, 2), random.randint(0, 2)
         return FleeNearestPolicy()(obs, agent_idx)
@@ -318,7 +319,7 @@ class CornerToCornerPolicy:
     def __init__(self):
         self._corner_idx = 0
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         sx, sz, syaw = _get_pos_yaw(obs)
         cx, cz = self.CORNERS[self._corner_idx]
         if _distance(sx, sz, cx, cz) < 2.0:
@@ -331,7 +332,7 @@ class CornerToCornerPolicy:
 class ReactiveDodgePolicy:
     name = "reactive_dodge"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         predator = _nearest_predator(obs)
         if predator is None:
             return 0, 2
@@ -351,7 +352,7 @@ class ReactiveDodgePolicy:
 class SlowFleePolicy:
     name = "slow_flee"
 
-    def __call__(self, obs: dict, agent_idx: int) -> tuple[int, int]:
+    def __call__(self, obs: dict, agent_idx: int) -> Tuple[int, int]:
         predator = _nearest_predator(obs)
         if predator is None:
             return 1, 2
@@ -399,13 +400,13 @@ def get_prey_policy_by_index(k: int):
 # ---------------------------------------------------------------------------
 
 
-def get_flat_action(pred_action: tuple[int, int, int]) -> int:
+def get_flat_action(pred_action: Tuple[int, int, int]) -> int:
     """Legacy predator 18-action flatten: (move, turn3, attack) -> [0, 17]."""
     move, turn, attack = pred_action
     return int(move) * 6 + int(turn) * 2 + int(attack)
 
 
-def decode_flat_action(flat_idx: int) -> tuple[int, int, int]:
+def decode_flat_action(flat_idx: int) -> Tuple[int, int, int]:
     """Legacy predator 18-action decode."""
     action = int(flat_idx)
     attack = action % 2
@@ -419,7 +420,7 @@ def encode_pred_action_30(move: int, turn_bin: int, attack: int) -> int:
     return int(move) * (TURN_BINS * 2) + int(turn_bin) * 2 + int(attack)
 
 
-def decode_pred_action_30(flat_idx: int) -> tuple[int, int, int]:
+def decode_pred_action_30(flat_idx: int) -> Tuple[int, int, int]:
     """Predator action decode from OMIS embedding space [0, 29]."""
     action = int(flat_idx)
     attack = action % 2
@@ -433,7 +434,7 @@ def encode_prey_action_9(move: int, turn: int) -> int:
     return int(move) * 3 + int(turn)
 
 
-def decode_prey_action_9(flat_idx: int) -> tuple[int, int]:
+def decode_prey_action_9(flat_idx: int) -> Tuple[int, int]:
     """Prey action decode from [0, 8] to (move, turn)."""
     action = int(flat_idx)
     turn = action % 3
@@ -453,10 +454,10 @@ def turn_bin5_to_cont(turn_bin: int) -> float:
 
 
 def convert_actions_flat_to_tuple(
-    actions_flat: list[int],
+    actions_flat: List[int],
     predator_indices=[0, 1],
     prey_indices=[2],
-) -> list[tuple]:
+) -> List[Tuple]:
     """
     Legacy converter from old 18-flat actions to env tuple format.
 

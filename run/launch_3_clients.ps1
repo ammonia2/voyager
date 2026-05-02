@@ -22,7 +22,7 @@ for ($i = 0; $i -lt 3; $i++) {
 
     # Stagger launches to avoid CPU spikes during startup
     if ($i -lt 2) {
-        Start-Sleep -Seconds 10
+        Start-Sleep -Seconds 60
     }
 }
 
