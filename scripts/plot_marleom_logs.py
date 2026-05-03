@@ -116,6 +116,11 @@ def _extract(records: list[dict], record_type: str) -> list[dict]:
     return [r for r in records if r.get("record_type") == record_type]
 
 
+def _record_index(record: dict) -> int:
+    value = record.get("update", record.get("step", record.get("episode", 0)))
+    return int(value)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot MARLeOM predator/prey JSONL logs")
     parser.add_argument(
@@ -288,7 +293,7 @@ def main():
 
     # Step-level predator metrics
     if pred_step:
-        pred_update = [int(r["update"]) for r in pred_step]
+        pred_update = [_record_index(r) for r in pred_step]
         _save_line_plot(plt, pred_update, [_safe_float(r.get("policyLoss")) for r in pred_step],
                         "Predator Policy Loss", "Update", "Policy Loss", out_dir / "predator_policy_loss.png")
         _save_line_plot(plt, pred_update, [_safe_float(r.get("valueLoss")) for r in pred_step],
@@ -304,7 +309,7 @@ def main():
 
     # Step-level prey metrics
     if prey_step:
-        prey_update = [int(r["update"]) for r in prey_step]
+        prey_update = [_record_index(r) for r in prey_step]
         _save_line_plot(plt, prey_update, [_safe_float(r.get("policyEntropy")) for r in prey_step],
                         "Prey Policy Entropy (Step)", "Update", "Entropy", out_dir / "prey_policy_entropy_step.png")
         _save_line_plot(plt, prey_update, [_safe_float(r.get("sec_per_up")) for r in prey_step],

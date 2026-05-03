@@ -116,6 +116,11 @@ def _extract(records: list[dict], record_type: str) -> list[dict]:
     return [r for r in records if r.get("record_type") == record_type]
 
 
+def _record_index(record: dict) -> int:
+    value = record.get("update", record.get("step", record.get("episode", 0)))
+    return int(value)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot OMIS predator/prey JSONL logs")
     parser.add_argument(
@@ -289,13 +294,13 @@ def main():
 
     # Step-level predator metrics
     if pred_step:
-        pred_update = [int(r["update"]) for r in pred_step]
+        pred_update = [_record_index(r) for r in pred_step]
         _save_line_plot(plt, pred_update, [_safe_float(r.get("loss")) for r in pred_step],
                         "Predator Loss", "Update", "Loss", out_dir / "predator_loss.png")
 
     # Step-level prey metrics
     if prey_step:
-        prey_update = [int(r["update"]) for r in prey_step]
+        prey_update = [_record_index(r) for r in prey_step]
         if any(_safe_float(r.get("sec_per_up")) > 0 for r in prey_step):
             _save_line_plot(plt, prey_update, [_safe_float(r.get("sec_per_up")) for r in prey_step],
                             "Prey Seconds per Update", "Update", "Seconds", out_dir / "prey_sec_per_update.png")
