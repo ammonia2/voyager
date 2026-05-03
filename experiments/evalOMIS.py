@@ -348,7 +348,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_path = os.path.join(results_dir, f"eval_results_{algo}_{timestamp}.json")
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({"algorithm": algo, "total_episodes": len(all_metrics),
+        json.dump({"algorithm": algo, "total_episodes": len(all_metrics_final),
                    "workers": worldSize}, f, indent=2)
     print(f"\n[evalOMIS] Results saved → {json_path}")
 
