@@ -54,6 +54,7 @@ class VoxelEncoder(nn.Module):
         cnnOut   = self.cnn(gridEmb).reshape(B, -1)
         cnnFeats = F.relu(self.cnnProj(cnnOut))
 
+        # attention
         oppFeats  = oppFeats.view(B, MAX_OPPONENTS, OPP_DIM)
         oppEmb    = F.relu(self.oppEmbed(oppFeats))
         query     = self.queryProj(cnnFeats).unsqueeze(2)
