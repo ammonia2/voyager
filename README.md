@@ -30,11 +30,11 @@ OMIS achieves near-perfect win rates on seen prey but is trained against a fixed
 
 ### Cumulative Win Rate
 
-![Cumulative Win Rates](plots/cumulative_win_rates.png)
+![Cumulative Win Rates](plots/mappo/predator_cumulative_win_rate.png)
 
 ### Rolling Win Rate (50-episode window)
 
-![Rolling Win Rates](plots/rolling_win_rates.png)
+![Rolling Win Rates](plots/mappo/predator_rolling_win_rate.png)
 
 ### Distributed Training Speedup
 
