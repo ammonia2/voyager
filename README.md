@@ -1,5 +1,9 @@
 # Spatially Aware Opponent Modeling in 3D Multi-Agent RL
 
+Read the paper here: 
+![Spatially aware OM in 3D](paper.pdf)
+
+## Summary:
 Two predators learn to tag a co-learning prey inside a Project Malmo 3D arena using MAPPO extended with an opponent modeling (OM) head and a spatial voxel encoder.
 
 Existing opponent modeling work targets 2D environments almost exclusively. This project extends OM to a fully 3D setting where agents must reason about spatial structure in three dimensions. Each predator encodes its 5×5×5 voxel visibility window through a 3D CNN, attends over opponent features, and jointly trains an OM head that predicts prey actions via cross-entropy loss. The OM gradients flow back into the shared encoder, shaping the representation toward prey-predictive features. Rollout collection runs across N=2 parallel Malmo workers synchronized via `dist.all_reduce`.
