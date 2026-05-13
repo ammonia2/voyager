@@ -1,7 +1,7 @@
 # Spatially Aware Opponent Modeling in 3D Multi-Agent RL
 
 Read the paper here: 
-![Spatially aware OM in 3D](paper.pdf)
+[Spatially aware OM in 3D](paper.pdf)
 
 ## Summary:
 Two predators learn to tag a co-learning prey inside a Project Malmo 3D arena using MAPPO extended with an opponent modeling (OM) head and a spatial voxel encoder.
